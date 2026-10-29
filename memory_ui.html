@@ -99,8 +99,6 @@
   .memory-id { font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: var(--muted); }
   .memory-time { font-size: 0.62rem; color: var(--muted); }
 
-  /* Graph */
-  #graphCanvas { width: 100%; height: 500px; background: var(--bg2); border-radius: var(--radius); border: 1px solid var(--border); display: block; }
 
   /* Search */
   .search-box { position: relative; }
@@ -174,11 +172,7 @@
       <button class="nav-item active" onclick="showPage('dashboard')"><span class="nav-icon">📊</span> Dashboard<span class="nav-kana">概要</span></button>
       <button class="nav-item" onclick="showPage('browse')"><span class="nav-icon">📋</span> Browse<span class="nav-kana">一覧</span></button>
       <button class="nav-item" onclick="showPage('search')"><span class="nav-icon">🔍</span> Search<span class="nav-kana">検索</span></button>
-      <button class="nav-item" onclick="showPage('graph')"><span class="nav-icon">🕸️</span> Graph (canvas)<span class="nav-kana">図</span></button>
       <a class="nav-item" href="/graph" style="text-decoration:none"><span class="nav-icon">🌐</span> Graph (D3)<span class="nav-kana">図</span></a>
-      <button class="nav-item" onclick="showPage('add')"><span class="nav-icon">➕</span> Add Memory<span class="nav-kana">追加</span></button>
-      <button class="nav-item" onclick="showPage('extract')"><span class="nav-icon">✨</span> Extract<span class="nav-kana">抽出</span></button>
-      <button class="nav-item" onclick="showPage('context')"><span class="nav-icon">💬</span> Context<span class="nav-kana">文脈</span></button>
     </nav>
     <div class="sidebar-footer">
       <div class="sidebar-status">
@@ -265,107 +259,6 @@
       </div>
     </div>
 
-    <!-- Graph -->
-    <div id="page-graph" class="page">
-      <div class="header">
-        <div>
-          <h1>Memory Graph <span class="kana">グラフ</span></h1>
-          <p>Visualize relationships between memories</p>
-        </div>
-      </div>
-      <div class="card">
-        <canvas id="graphCanvas"></canvas>
-        <p style="color:var(--muted);font-size:0.75rem;margin-top:0.75rem">Nodes are memories, edges are relationships (same_topic, same_subject, same_day). Drag to explore.</p>
-      </div>
-    </div>
-
-    <!-- Add -->
-    <div id="page-add" class="page">
-      <div class="header">
-        <div>
-          <h1>Add Memory <span class="kana">追加</span></h1>
-          <p>Store a new fact or knowledge</p>
-        </div>
-      </div>
-      <div class="card">
-        <div class="form-group">
-          <label class="form-label">Memory Body</label>
-          <textarea id="addBody" placeholder="Enter a fact, preference, event, or knowledge..."></textarea>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Layer</label>
-            <select id="addLayer">
-              <option value="semantic">Semantic (facts)</option>
-              <option value="episodic">Episodic (events)</option>
-              <option value="procedural">Procedural (skills)</option>
-              <option value="profile">Profile (preferences)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Fact Type</label>
-            <select id="addFactType">
-              <option value="fact">Fact</option>
-              <option value="preference">Preference</option>
-              <option value="event">Event</option>
-              <option value="skill">Skill</option>
-              <option value="goal">Goal</option>
-              <option value="constraint">Constraint</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Subject</label>
-            <input type="text" id="addSubject" placeholder="Main entity">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Topic</label>
-            <input type="text" id="addTopic" placeholder="Category">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Confidence</label>
-            <input type="number" id="addConfidence" value="1.0" step="0.1" min="0" max="1">
-          </div>
-        </div>
-        <button class="btn btn-primary" onclick="addMemory()">Add Memory</button>
-      </div>
-    </div>
-
-    <!-- Extract -->
-    <div id="page-extract" class="page">
-      <div class="header">
-        <div>
-          <h1>Extract Facts (LLM) <span class="kana">抽出</span></h1>
-          <p>Automatically extract and store facts from text using LLM</p>
-        </div>
-      </div>
-      <div class="card">
-        <div class="form-group">
-          <label class="form-label">Text to Extract From</label>
-          <textarea id="extractText" placeholder="Paste conversation, article, or notes here..."></textarea>
-        </div>
-        <button class="btn btn-primary" onclick="doExtract()">Extract & Store Facts</button>
-        <div class="extract-result" id="extractResults"></div>
-      </div>
-    </div>
-
-    <!-- Context -->
-    <div id="page-context" class="page">
-      <div class="header">
-        <div>
-          <h1>Memory Context <span class="kana">文脈</span></h1>
-          <p>Get relevant memory context for a query (for LLM injection)</p>
-        </div>
-      </div>
-      <div class="card">
-        <div class="search-box">
-          <span class="search-icon">💬</span>
-          <input type="text" id="contextQuery" placeholder="Enter a query..." onkeydown="if(event.key==='Enter')doContext()">
-        </div>
-        <div class="form-row" style="margin-top:0.75rem">
-          <button class="btn btn-primary" onclick="doContext()">Get Context</button>
-        </div>
-        <div class="context-output" id="contextResult" style="margin-top:1rem">Enter a query to retrieve relevant memory context.</div>
-      </div>
     </div>
   </main>
 </div>
