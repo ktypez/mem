@@ -124,9 +124,41 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func handleNodes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		rows, err := pool.Query(context.Background(),
-			`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at
-			 FROM memory_nodes ORDER BY created_at DESC`)
+		// Support filters: limit, layer, topic, subject
+		q := r.URL.Query()
+		limit := 100
+		if l := q.Get("limit"); l != "" {
+			fmt.Sscanf(l, "%d", &limit)
+		}
+		if limit > 5000 {
+			limit = 5000
+		}
+		layer := q.Get("layer")
+		topic := q.Get("topic")
+		subject := q.Get("subject")
+
+		query := `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at FROM memory_nodes WHERE 1=1`
+		args := []interface{}{}
+		argIdx := 1
+		if layer != "" {
+			query += fmt.Sprintf(" AND layer = $%d", argIdx)
+			args = append(args, layer)
+			argIdx++
+		}
+		if topic != "" {
+			query += fmt.Sprintf(" AND topic = $%d", argIdx)
+			args = append(args, topic)
+			argIdx++
+		}
+		if subject != "" {
+			query += fmt.Sprintf(" AND subject = $%d", argIdx)
+			args = append(args, subject)
+			argIdx++
+		}
+		query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", argIdx)
+		args = append(args, limit)
+
+		rows, err := pool.Query(context.Background(), query, args...)
 		if err != nil {
 			jsonResp(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -137,8 +169,7 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 			var n Node
 			var captured, created, updated interface{}
 			if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated); err != nil {
-				jsonResp(w, 500, map[string]string{"error": err.Error()})
-				return
+				continue
 			}
 			n.CapturedAt = fmt.Sprint(captured)
 			n.CreatedAt = fmt.Sprint(created)
@@ -365,9 +396,101 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleContext(w http.ResponseWriter, r *http.Request) {
+	var query string
+	var limit int = 5
+	if r.Method == "GET" {
+		query = r.URL.Query().Get("q")
+		if l := r.URL.Query().Get("limit"); l != "" {
+			fmt.Sscanf(l, "%d", &limit)
+		}
+	} else {
+		var data map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&data)
+		query = fmt.Sprint(data["query"])
+		if l, ok := data["limit"].(float64); ok {
+			limit = int(l)
+		}
+	}
+	rows, err := pool.Query(context.Background(),
+		`SELECT body FROM memory_nodes WHERE body ILIKE $1 ORDER BY created_at DESC LIMIT $2`,
+		"%"+query+"%", limit)
+	if err != nil {
+		jsonResp(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	var bodies []string
+	for rows.Next() {
+		var b string
+		rows.Scan(&b)
+		bodies = append(bodies, b)
+	}
+	ctx := strings.Join(bodies, "\n---\n")
+	jsonResp(w, 200, map[string]interface{}{"context": ctx})
+}
+
+func handleExtract(w http.ResponseWriter, r *http.Request) {
+	var data map[string]interface{}
+	json.NewDecoder(r.Body).Decode(&data)
+	text := fmt.Sprint(data["text"])
+	if text == "" || text == "<nil>" {
+		jsonResp(w, 400, map[string]string{"error": "text required"})
+		return
+	}
+	id := "mem_" + strings.ReplaceAll(uuid.New().String()[:12], "-", "")
+	layer := "semantic"
+	if l, ok := data["layer"].(string); ok && l != "" {
+		layer = l
+	}
+	nowStr := now()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, confidence, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, 'fact', 1.0, '{}', $5, $5)`,
+		id, text, hashBody(text), layer, nowStr)
+	if err != nil {
+		jsonResp(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResp(w, 201, map[string]interface{}{"extracted": 1, "nodes": []map[string]string{{"id": id, "body": text}}})
+}
+
+func handleRebuildEdges(w http.ResponseWriter, r *http.Request) {
+	_, _ = pool.Exec(context.Background(), "DELETE FROM memory_edges WHERE rel IN ('same_topic', 'same_subject')")
+
+	count := 0
+	rows, err := pool.Query(context.Background(),
+		`SELECT a.id, b.id FROM memory_nodes a JOIN memory_nodes b ON a.topic = b.topic AND a.topic != '' AND a.id < b.id`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var src, dst string
+			rows.Scan(&src, &dst)
+			pool.Exec(context.Background(), "INSERT INTO memory_edges (src, dst, rel, weight, created_at) VALUES ($1, $2, 'same_topic', 1.0, $3)", src, dst, now())
+			count++
+		}
+	}
+	rows2, err2 := pool.Query(context.Background(),
+		`SELECT a.id, b.id FROM memory_nodes a JOIN memory_nodes b ON a.subject = b.subject AND a.subject != '' AND a.id < b.id`)
+	if err2 == nil {
+		defer rows2.Close()
+		for rows2.Next() {
+			var src, dst string
+			rows2.Scan(&src, &dst)
+			pool.Exec(context.Background(), "INSERT INTO memory_edges (src, dst, rel, weight, created_at) VALUES ($1, $2, 'same_subject', 1.0, $3)", src, dst, now())
+			count++
+		}
+	}
+	jsonResp(w, 200, map[string]interface{}{"status": "ok", "edges_created": count})
+}
 func handleUI(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/graph" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(graphHTML))
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(uiHTML))
+	w.Write([]byte(dashboardHTML))
 }
 
 func main() {
@@ -397,8 +520,12 @@ func main() {
 	mux.HandleFunc("/v1/memory/edges", handleEdges)
 	mux.HandleFunc("/v1/memory/search", handleSearch)
 	mux.HandleFunc("/v1/memory/stats", handleStats)
+	mux.HandleFunc("/v1/memory/context", handleContext)
+	mux.HandleFunc("/v1/memory/extract", handleExtract)
+	mux.HandleFunc("/v1/memory/rebuild-edges", handleRebuildEdges)
 
 	// UI
+	mux.HandleFunc("/graph", handleUI)
 	mux.HandleFunc("/", handleUI)
 
 	log.Printf("mem service starting on port %s", port)

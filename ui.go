@@ -1,6 +1,6 @@
 package main
 
-const uiHTML = `<!DOCTYPE html>
+const graphHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
