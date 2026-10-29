@@ -1,0 +1,445 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var pool *pgxpool.Pool
+
+const port = "3200"
+
+// Node represents a memory node (no bot_id)
+type Node struct {
+	ID         string  `json:"id"`
+	Body       string  `json:"body"`
+	Layer      string  `json:"layer"`
+	Topic      string  `json:"topic"`
+	Subject    string  `json:"subject"`
+	Confidence float64 `json:"confidence"`
+	FactType   string  `json:"fact_type"`
+	Metadata   string  `json:"metadata"`
+	CapturedAt string  `json:"captured_at"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
+}
+
+// Edge represents a relationship between nodes
+type Edge struct {
+	ID        int64   `json:"id"`
+	Src       string  `json:"src"`
+	Dst       string  `json:"dst"`
+	Rel       string  `json:"rel"`
+	Weight    float64 `json:"weight"`
+	CreatedAt string  `json:"created_at"`
+}
+
+func initDB() {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://mem:mem@localhost:5432/mem?sslmode=disable"
+	}
+	var err error
+	pool, err = pgxpool.New(context.Background(), dbURL)
+	if err != nil {
+		log.Fatalf("Unable to connect to database: %v", err)
+	}
+
+	// Create tables
+	_, err = pool.Exec(context.Background(), `
+		CREATE TABLE IF NOT EXISTS memory_nodes (
+			id TEXT PRIMARY KEY,
+			body TEXT NOT NULL,
+			hash TEXT NOT NULL,
+			layer TEXT NOT NULL DEFAULT 'semantic',
+			fact_type TEXT NOT NULL DEFAULT 'fact',
+			subject TEXT,
+			confidence REAL NOT NULL DEFAULT 1.0,
+			metadata TEXT DEFAULT '{}',
+			topic TEXT,
+			captured_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS memory_edges (
+			id BIGSERIAL PRIMARY KEY,
+			src TEXT NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+			dst TEXT NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+			rel TEXT NOT NULL,
+			weight REAL NOT NULL DEFAULT 1.0,
+			metadata TEXT DEFAULT '{}',
+			created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_nodes_layer ON memory_nodes(layer);
+		CREATE INDEX IF NOT EXISTS idx_nodes_topic ON memory_nodes(topic);
+		CREATE INDEX IF NOT EXISTS idx_edges_src ON memory_edges(src);
+		CREATE INDEX IF NOT EXISTS idx_edges_dst ON memory_edges(dst);
+	`)
+	if err != nil {
+		log.Fatalf("Unable to create tables: %v", err)
+	}
+	log.Println("Database initialized")
+}
+
+func now() string {
+	return time.Now().Format("2006-01-02 15:04:05")
+}
+
+func hashBody(body string) string {
+	h := ""
+	for _, c := range body {
+		h = fmt.Sprintf("%s%02x", h, c)
+	}
+	if len(h) > 16 {
+		h = h[:16]
+	}
+	return h
+}
+
+func jsonResp(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	var count int
+	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM memory_nodes").Scan(&count)
+	jsonResp(w, 200, map[string]interface{}{
+		"status":  "ok",
+		"service": "mem",
+		"nodes":   count,
+	})
+}
+
+func handleNodes(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		rows, err := pool.Query(context.Background(),
+			`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at
+			 FROM memory_nodes ORDER BY created_at DESC`)
+		if err != nil {
+			jsonResp(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+		nodes := []Node{}
+		for rows.Next() {
+			var n Node
+			var captured, created, updated interface{}
+			if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated); err != nil {
+				jsonResp(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			n.CapturedAt = fmt.Sprint(captured)
+			n.CreatedAt = fmt.Sprint(created)
+			n.UpdatedAt = fmt.Sprint(updated)
+			nodes = append(nodes, n)
+		}
+		jsonResp(w, 200, map[string]interface{}{"nodes": nodes, "count": len(nodes)})
+
+	case "POST":
+		var data map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			jsonResp(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		body := fmt.Sprint(data["body"])
+		layer := "semantic"
+		if v, ok := data["layer"].(string); ok && v != "" {
+			layer = v
+		}
+		topic := ""
+		if v, ok := data["topic"].(string); ok {
+			topic = v
+		}
+		subject := ""
+		if v, ok := data["subject"].(string); ok {
+			subject = v
+		}
+		confidence := 1.0
+		if v, ok := data["confidence"].(float64); ok {
+			confidence = v
+		}
+		factType := "fact"
+		if v, ok := data["fact_type"].(string); ok && v != "" {
+			factType = v
+		}
+		metadata := "{}"
+		if v, ok := data["metadata"]; ok {
+			b, _ := json.Marshal(v)
+			metadata = string(b)
+		}
+
+		id := uuid.New().String()
+		nowStr := now()
+		_, err := pool.Exec(context.Background(),
+			`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, subject, confidence, metadata, topic, captured_at, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			id, body, hashBody(body), layer, factType, subject, confidence, metadata, topic, nowStr, nowStr, nowStr)
+		if err != nil {
+			jsonResp(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+
+		node := Node{
+			ID: id, Body: body, Layer: layer, Topic: topic, Subject: subject,
+			Confidence: confidence, FactType: factType, Metadata: metadata,
+			CapturedAt: nowStr, CreatedAt: nowStr, UpdatedAt: nowStr,
+		}
+		jsonResp(w, 201, node)
+
+	case "DELETE":
+		_, err := pool.Exec(context.Background(), "DELETE FROM memory_nodes")
+		if err != nil {
+			jsonResp(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		jsonResp(w, 200, map[string]string{"status": "deleted_all"})
+	}
+}
+
+func handleNode(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/memory/nodes/")
+	id = strings.TrimPrefix(id, "/api/nodes/")
+	if id == "" {
+		jsonResp(w, 400, map[string]string{"error": "missing id"})
+		return
+	}
+
+	switch r.Method {
+	case "GET":
+		var n Node
+		var captured, created, updated interface{}
+		err := pool.QueryRow(context.Background(),
+			`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at
+			 FROM memory_nodes WHERE id = $1`, id).
+			Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated)
+		if err != nil {
+			jsonResp(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		n.CapturedAt = fmt.Sprint(captured)
+		n.CreatedAt = fmt.Sprint(created)
+		n.UpdatedAt = fmt.Sprint(updated)
+		jsonResp(w, 200, n)
+
+	case "DELETE":
+		_, err := pool.Exec(context.Background(), "DELETE FROM memory_nodes WHERE id = $1", id)
+		if err != nil {
+			jsonResp(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		jsonResp(w, 200, map[string]string{"status": "deleted", "id": id})
+	}
+}
+
+func handleEdges(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		rows, err := pool.Query(context.Background(),
+			`SELECT id, src, dst, rel, weight, created_at FROM memory_edges ORDER BY created_at DESC`)
+		if err != nil {
+			jsonResp(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+		edges := []Edge{}
+		for rows.Next() {
+			var e Edge
+			var created interface{}
+			if err := rows.Scan(&e.ID, &e.Src, &e.Dst, &e.Rel, &e.Weight, &created); err != nil {
+				jsonResp(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			e.CreatedAt = fmt.Sprint(created)
+			edges = append(edges, e)
+		}
+		jsonResp(w, 200, map[string]interface{}{"edges": edges, "count": len(edges)})
+
+	case "POST":
+		var data map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			jsonResp(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		edgesRaw, ok := data["edges"].([]interface{})
+		if !ok {
+			edgesRaw = []interface{}{data}
+		}
+		nowStr := now()
+		count := 0
+		for _, e := range edgesRaw {
+			em, _ := e.(map[string]interface{})
+			src := fmt.Sprint(em["src"])
+			dst := fmt.Sprint(em["dst"])
+			rel := "related"
+			if v, ok := em["rel"].(string); ok && v != "" {
+				rel = v
+			}
+			if v, ok := em["kind"].(string); ok && v != "" {
+				rel = v
+			}
+			weight := 1.0
+			if v, ok := em["weight"].(float64); ok {
+				weight = v
+			}
+			_, err := pool.Exec(context.Background(),
+				`INSERT INTO memory_edges (src, dst, rel, weight, created_at) VALUES ($1, $2, $3, $4, $5)`,
+				src, dst, rel, weight, nowStr)
+			if err == nil {
+				count++
+			}
+		}
+		jsonResp(w, 200, map[string]interface{}{"status": "ok", "count": count})
+
+	case "DELETE":
+		_, err := pool.Exec(context.Background(), "DELETE FROM memory_edges")
+		if err != nil {
+			jsonResp(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		jsonResp(w, 200, map[string]string{"status": "deleted_all_edges"})
+	}
+}
+
+func handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" && r.Method == "POST" {
+		var data map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&data)
+		q = fmt.Sprint(data["query"])
+	}
+	limit := 10
+	rows, err := pool.Query(context.Background(),
+		`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, created_at, updated_at
+		 FROM memory_nodes WHERE body ILIKE $1 ORDER BY created_at DESC LIMIT $2`,
+		"%"+q+"%", limit)
+	if err != nil {
+		jsonResp(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	nodes := []Node{}
+	for rows.Next() {
+		var n Node
+		var created, updated interface{}
+		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &created, &updated); err != nil {
+			continue
+		}
+		n.CreatedAt = fmt.Sprint(created)
+		n.UpdatedAt = fmt.Sprint(updated)
+		nodes = append(nodes, n)
+	}
+	jsonResp(w, 200, map[string]interface{}{"results": nodes, "count": len(nodes)})
+}
+
+func handleStats(w http.ResponseWriter, r *http.Request) {
+	var nodes, edges int
+	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM memory_nodes").Scan(&nodes)
+	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM memory_edges").Scan(&edges)
+
+	rows, _ := pool.Query(context.Background(), "SELECT layer, COUNT(*) FROM memory_nodes GROUP BY layer")
+	defer rows.Close()
+	layers := map[string]int{}
+	for rows.Next() {
+		var l string
+		var c int
+		rows.Scan(&l, &c)
+		layers[l] = c
+	}
+
+	jsonResp(w, 200, map[string]interface{}{
+		"nodes":  nodes,
+		"edges":  edges,
+		"layers": layers,
+	})
+}
+
+func handleUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(uiHTML))
+}
+
+func main() {
+	initDB()
+	defer pool.Close()
+
+	mux := http.NewServeMux()
+
+	// Health
+	mux.HandleFunc("/health", handleHealth)
+
+	// API aliases (memoh-style: /api/nodes, /api/edges)
+	mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			handleNodesList(w, r)
+		} else {
+			handleNodes(w, r)
+		}
+	})
+	mux.HandleFunc("/api/edges", func(w http.ResponseWriter, r *http.Request) {
+		handleEdges(w, r)
+	})
+
+	// v1 API
+	mux.HandleFunc("/v1/memory/nodes", handleNodes)
+	mux.HandleFunc("/v1/memory/nodes/", handleNode)
+	mux.HandleFunc("/v1/memory/edges", handleEdges)
+	mux.HandleFunc("/v1/memory/search", handleSearch)
+	mux.HandleFunc("/v1/memory/stats", handleStats)
+
+	// UI
+	mux.HandleFunc("/", handleUI)
+
+	log.Printf("mem service starting on port %s", port)
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func handleNodesList(w http.ResponseWriter, r *http.Request) {
+	rows, err := pool.Query(context.Background(),
+		`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at
+		 FROM memory_nodes ORDER BY created_at DESC`)
+	if err != nil {
+		jsonResp(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type nodeResp struct {
+		ID         string  `json:"id"`
+		Body       string  `json:"body"`
+		Layer      string  `json:"layer"`
+		Topic      string  `json:"topic"`
+		Subject    string  `json:"subject"`
+		Confidence float64 `json:"confidence"`
+		CreatedAt  string  `json:"created_at"`
+		UpdatedAt  string  `json:"updated_at"`
+	}
+	nodes := []nodeResp{}
+	for rows.Next() {
+		var n nodeResp
+		var captured, created, updated interface{}
+		var factType, metadata string
+		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &factType, &metadata, &captured, &created, &updated); err != nil {
+			log.Printf("scan error: %v", err)
+			continue
+		}
+		n.CreatedAt = fmt.Sprint(created)
+		n.UpdatedAt = fmt.Sprint(updated)
+		nodes = append(nodes, n)
+	}
+	jsonResp(w, 200, nodes)
+}
+
+

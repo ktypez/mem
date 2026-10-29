@@ -1,13 +1,14 @@
 [Unit]
-Description=Hermes Memory Service (memoh-style knowledge graph)
-After=network.target
+Description=mem — Memory Service (Go/PostgreSQL knowledge graph)
+After=network.target postgresql.service
+Wants=postgresql.service
 
 [Service]
 Type=simple
 User=admin
-WorkingDirectory=/home/admin/.hermes
-EnvironmentFile=/home/admin/.hermes/.env
-ExecStart=/usr/bin/python3 /home/admin/.hermes/tools/memory_service.py
+WorkingDirectory=/home/admin/projects/mem
+Environment=DATABASE_URL=postgres://mem:mem@localhost:5432/mem?sslmode=disable
+ExecStart=/home/admin/projects/mem/mem
 Restart=always
 RestartSec=5
 
