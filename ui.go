@@ -125,18 +125,26 @@ let currentTransform = d3.zoomIdentity;
 
 async function load(){
   document.getElementById('status').textContent='loading...';
-  const [nr,er]=await Promise.all([
-    fetch('/api/nodes'),
-    fetch('/api/edges'),
-  ]);
-  const nodes=await nr.json();
-  const edgesResp=await er.json();
-  const edges=Array.isArray(edgesResp)?edgesResp:(edgesResp.edges||[]);
-  document.getElementById('status').textContent=nodes.length+' nodes, '+edges.length+' edges';
-  document.getElementById('nodeCount').textContent=nodes.length;
-  document.getElementById('edgeCount').textContent=edges.length;
-  document.getElementById('infoBadge').style.display='block';
-  render(nodes,edges);
+  try {
+    const [nr,er]=await Promise.all([
+      fetch('/api/nodes'),
+      fetch('/api/edges'),
+    ]);
+    if(!nr.ok || !er.ok) throw new Error('HTTP '+nr.status+' / '+er.status);
+    const nodes=await nr.json();
+    const edgesResp=await er.json();
+    const edges=Array.isArray(edgesResp)?edgesResp:(edgesResp.edges||[]);
+    // Map src/dst to source/target for D3 forceLink
+    edges.forEach(e=>{ e.source=e.src; e.target=e.dst; });
+    document.getElementById('status').textContent=nodes.length+' nodes, '+edges.length+' edges';
+    document.getElementById('nodeCount').textContent=nodes.length;
+    document.getElementById('edgeCount').textContent=edges.length;
+    document.getElementById('infoBadge').style.display='block';
+    render(nodes,edges);
+  } catch(err) {
+    document.getElementById('status').textContent='error: '+err.message;
+    console.error(err);
+  }
 }
 
 function render(nodes,edges){
@@ -175,8 +183,8 @@ function render(nodes,edges){
       .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;})
       .on('end',(e,d)=>{if(!e.active)simulation.alphaTarget(0);d.fx=null;d.fy=null;}));
 
-  node.append('circle').attr('r',6).attr('fill',d=>color(d.layer));
-  node.append('text').text(d=>(d.body||d.id).slice(0,18)).attr('x',10).attr('y',3);
+  node.append('circle').attr('r',8).attr('fill',d=>color(d.layer)).attr('stroke','rgba(255,255,255,0.3)').attr('stroke-width',1);
+  node.append('text').text(d=>(d.body||d.id).slice(0,18)).attr('x',12).attr('y',4).attr('fill','#a1a1aa').attr('font-size','10px');
 
   node.on('mouseover',(e,d)=>{
     tooltip.style.display='block';
@@ -193,16 +201,7 @@ function render(nodes,edges){
     node.attr('transform',d=>'translate('+d.x+','+d.y+')');
   });
 
-  simulation.on('end',()=>{
-    // Auto-fit
-    const bounds=g.node().getBBox();
-    if(bounds.width>0 && bounds.height>0){
-      const scale=0.85*Math.min(w/bounds.width, h/bounds.height);
-      const tx=w/2-scale*(bounds.x+bounds.width/2);
-      const ty=h/2-scale*(bounds.y+bounds.height/2);
-      svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(tx,ty).scale(scale));
-    }
-  });
+  simulation.on('end',()=>{ document.getElementById('status').textContent='loaded '+nodes.length+' nodes, '+edges.length+' edges (settled)'; });
 }
 
 function zoomIn(){ svg.transition().call(zoom.scaleBy,1.5); }

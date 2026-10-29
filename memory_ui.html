@@ -148,6 +148,7 @@
     .sidebar { position: fixed; left: -240px; z-index: 100; transition: left 0.3s ease; height: 100vh; }
     .sidebar.open { left: 0; }
     #mobileMenuBtn { display: block !important; }
+    #backdrop.open { display: block !important; }
     .main { padding: 1rem; padding-top: 4.5rem; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
     .form-row { flex-direction: column; }
@@ -157,7 +158,8 @@
 </style>
 </head>
 <body>
-<button id="mobileMenuBtn" onclick="document.getElementById('sidebar').classList.toggle('open')" style="display:none;position:fixed;top:1rem;left:1rem;z-index:200;background:var(--card);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.75rem;border-radius:var(--radius-sm);cursor:pointer;font-size:1.25rem">☰</button>
+<button id="mobileMenuBtn" onclick="document.getElementById('sidebar').classList.toggle('open'); document.getElementById('backdrop').classList.toggle('open')" style="display:none;position:fixed;top:1rem;left:1rem;z-index:200;background:var(--card);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.75rem;border-radius:var(--radius-sm);cursor:pointer;font-size:1.25rem">☰</button>
+<div id="backdrop" onclick="document.getElementById('sidebar').classList.remove('open'); this.classList.remove('open')" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99;backdrop-filter:blur(2px)"></div>
 <div class="app">
   <aside class="sidebar" id="sidebar">
     <div class="logo">
