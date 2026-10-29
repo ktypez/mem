@@ -160,7 +160,7 @@ function render(nodes,edges){
   svg.call(zoom);
 
   // Limit nodes for performance
-  const maxNodes=150;
+  const maxNodes=120;
   if(nodes.length>maxNodes){
     const connCount={};
     edges.forEach(e=>{connCount[e.src]=(connCount[e.src]||0)+1;connCount[e.dst]=(connCount[e.dst]||0)+1;});
@@ -170,11 +170,28 @@ function render(nodes,edges){
     edges=edges.filter(e=>keepIds.has(e.src)&&keepIds.has(e.dst));
   }
 
+  // Limit edges to top N by weight to reduce clutter
+  const maxEdges=300;
+  if(edges.length>maxEdges){
+    edges=edges.slice(0,maxEdges);
+  }
+
   simulation=d3.forceSimulation(nodes)
     .force('link',d3.forceLink(edges).id(d=>d.id).distance(100).strength(0.2))
     .force('charge',d3.forceManyBody().strength(-400))
     .force('center',d3.forceCenter(w/2,h/2))
-    .force('collide',d3.forceCollide(20));
+    .force('collide',d3.forceCollide(20))
+    .alphaDecay(0.05)
+    .on('tick',()=>{
+      link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+      node.attr('transform',d=>'translate('+d.x+','+d.y+')');
+    })
+    .on('end',()=>{
+      // Freeze positions so nodes stop floating
+      nodes.forEach(n=>{n.fx=n.x;n.fy=n.y;});
+      simulation.stop();
+      document.getElementById('status').textContent='loaded '+nodes.length+' nodes, '+edges.length+' edges (frozen)';
+    });
 
   link=g.append('g').attr('class','links').selectAll('line').data(edges).join('line').attr('class','link');
 
@@ -195,13 +212,6 @@ function render(nodes,edges){
     tooltip.style.left=(e.pageX+12)+'px';
     tooltip.style.top=(e.pageY-12)+'px';
   }).on('mouseout',()=>{tooltip.style.display='none';});
-
-  simulation.on('tick',()=>{
-    link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
-    node.attr('transform',d=>'translate('+d.x+','+d.y+')');
-  });
-
-  simulation.on('end',()=>{ document.getElementById('status').textContent='loaded '+nodes.length+' nodes, '+edges.length+' edges (settled)'; });
 }
 
 function zoomIn(){ svg.transition().call(zoom.scaleBy,1.5); }
