@@ -6,26 +6,28 @@ const graphHTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>mem — Memory Graph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
-body { margin:0; font-family: sans-serif; background:#1a1a2e; color:#E6E6E6; }
-#toolbar { padding:10px; background:#1a1a1a; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-#graph { width:100vw; height:calc(100vh - 50px); }
+body { margin:0; font-family:'Inter',sans-serif; background:#0a0a0a; color:#fafafa; }
+#toolbar { padding:10px 16px; background:#111113; border-bottom:1px solid rgba(255,255,255,0.06); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+#graph { width:100vw; height:calc(100vh - 50px); background:#0a0a0a; }
 .node { cursor:pointer; }
 .node circle { stroke:#fff; stroke-width:1.5px; }
-.link { stroke:#555; stroke-opacity:0.6; }
-label { font-size:11px; fill:#ccc; pointer-events:none; }
+.link { stroke:#f472b6; stroke-opacity:0.4; stroke-width:1.5px; }
+label { font-size:11px; fill:#a1a1aa; pointer-events:none; }
 .legend { display:flex; gap:8px; margin-left:auto; flex-wrap:wrap; }
-.legend span { display:inline-flex; align-items:center; gap:4px; font-size:12px; }
-.legend i { width:12px; height:12px; display:inline-block; border-radius:50%; }
-.tooltip { position:absolute; background:#222; color:#fff; padding:8px 12px; border-radius:6px; font-size:12px; max-width:300px; pointer-events:none; display:none; z-index:10; border:1px solid #555; }
-#status { color:#aaa; font-size:12px; }
+.legend span { display:inline-flex; align-items:center; gap:4px; font-size:11px; color:#a1a1aa; }
+.legend i { width:10px; height:10px; display:inline-block; border-radius:50%; }
+.tooltip { position:absolute; background:#141414; color:#fafafa; padding:8px 12px; border-radius:8px; font-size:12px; max-width:300px; pointer-events:none; display:none; z-index:10; border:1px solid rgba(255,255,255,0.12); }
+#status { color:#71717a; font-size:12px; }
 </style>
 </head>
 <body>
 <div id="toolbar">
-  <a href="/" style="color:#4FD1C0;text-decoration:none;font-weight:bold;margin-right:10px;">← Dashboard</a>
-  <button onclick="load()" style="padding:4px 12px;cursor:pointer;">Load Graph</button>
+  <a href="/" style="color:#f472b6;text-decoration:none;font-weight:600;margin-right:10px;display:flex;align-items:center;gap:6px;">← ダッシュボード</a>
+  <button onclick="load()" style="padding:6px 14px;cursor:pointer;background:rgba(244,114,182,0.1);border:1px solid rgba(244,114,182,0.3);color:#a78bfa;border-radius:8px;font-family:inherit;font-size:12px;">Load Graph</button>
   <span id="status">click Load to fetch</span>
   <div class="legend">
     <span><i style="background:#4FD1C0"></i>preference</span>
