@@ -59,27 +59,40 @@ async function load(){
 function render(nodes,edges){
   const svg=d3.select('#graph');
   svg.selectAll('*').remove();
-  const w=window.innerWidth, h=window.innerHeight-50;
-  const g=svg.attr('width',w).attr('height',h).append('g');
-  svg.call(d3.zoom().on('zoom',e=>g.attr('transform',e.transform)));
+  const w=window.innerWidth||800, h=(window.innerHeight||600)-50;
+  svg.attr('width',w).attr('height',h);
+  const g=svg.append('g');
+  svg.call(d3.zoom().scaleExtent([0.1,10]).on('zoom',e=>g.attr('transform',e.transform)));
+  // Limit nodes for performance if too many
+  const maxNodes=200;
+  if(nodes.length>maxNodes){
+    // Keep nodes with most connections
+    const connCount={};
+    edges.forEach(e=>{connCount[e.src]=(connCount[e.src]||0)+1;connCount[e.dst]=(connCount[e.dst]||0)+1;});
+    nodes.sort((a,b)=>(connCount[b.id]||0)-(connCount[a.id]||0));
+    const keepIds=new Set(nodes.slice(0,maxNodes).map(n=>n.id));
+    nodes=nodes.filter(n=>keepIds.has(n.id));
+    edges=edges.filter(e=>keepIds.has(e.src)&&keepIds.has(e.dst));
+  }
   const sim=d3.forceSimulation(nodes)
-    .force('link',d3.forceLink(edges).id(d=>d.id).distance(90))
-    .force('charge',d3.forceManyBody().strength(-260))
+    .force('link',d3.forceLink(edges).id(d=>d.id).distance(80).strength(0.3))
+    .force('charge',d3.forceManyBody().strength(-300))
     .force('center',d3.forceCenter(w/2,h/2))
-    .force('collide',d3.forceCollide(22));
-  const link=g.append('g').selectAll('line').data(edges).join('line').attr('class','link')
-    .attr('stroke','#4FD1C0').attr('stroke-opacity',0.6).attr('stroke-width',d=>Math.max(2,d.weight||1));
-  const node=g.append('g').selectAll('g').data(nodes).join('g').attr('class','node')
+    .force('collide',d3.forceCollide(18));
+  const link=g.append('g').attr('class','links').selectAll('line').data(edges).join('line')
+    .attr('stroke','#4FD1C0').attr('stroke-opacity',0.4).attr('stroke-width',1.5);
+  const node=g.append('g').attr('class','nodes').selectAll('g').data(nodes).join('g')
+    .attr('class','node').style('cursor','pointer')
     .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y;})
       .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;})
       .on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
-  node.append('circle').attr('r',12).attr('fill',d=>color(d.layer));
-  node.append('text').text(d=>(d.body||d.id).slice(0,24)).attr('x',14).attr('y',4);
+  node.append('circle').attr('r',8).attr('fill',d=>color(d.layer)).attr('stroke','#fff').attr('stroke-width',1.5);
+  node.append('text').text(d=>(d.body||d.id).slice(0,20)).attr('x',12).attr('y',4).attr('font-size','10px').attr('fill','#ccc');
   node.on('mouseover',(e,d)=>{
     tooltip.style.display='block';
     tooltip.style.left=(e.pageX+10)+'px';
     tooltip.style.top=(e.pageY-10)+'px';
-    tooltip.textContent=d.body||d.id;
+    tooltip.innerHTML='<b>'+d.layer+'</b><br>'+(d.body||d.id).slice(0,200);
   }).on('mousemove',(e)=>{
     tooltip.style.left=(e.pageX+10)+'px';
     tooltip.style.top=(e.pageY-10)+'px';
@@ -87,6 +100,14 @@ function render(nodes,edges){
   sim.on('tick',()=>{
     link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
     node.attr('transform',d=>'translate('+d.x+','+d.y+')');
+  });
+  // Auto-fit after simulation settles
+  sim.on('end',()=>{
+    const bounds=g.node().getBBox();
+    const scale=0.9*Math.min(w/bounds.width, h/bounds.height);
+    const tx=w/2-scale*(bounds.x+bounds.width/2);
+    const ty=h/2-scale*(bounds.y+bounds.height/2);
+    svg.transition().duration(500).call(d3.zoom().transform, d3.zoomIdentity.translate(tx,ty).scale(scale));
   });
 }
 load();

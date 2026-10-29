@@ -128,12 +128,18 @@
   /* Responsive */
   @media (max-width: 768px) {
     .app { grid-template-columns: 1fr; }
-    .sidebar { position: fixed; left: -240px; z-index: 100; transition: left 0.3s; }
+    .sidebar { position: fixed; left: -240px; z-index: 100; transition: left 0.3s; height: 100vh; }
     .sidebar.open { left: 0; }
+    #mobileMenuBtn { display: block !important; }
+    .main { padding: 1rem; padding-top: 4rem; }
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+    .form-row { flex-direction: column; }
+    .form-row > * { min-width: 100%; }
   }
 </style>
 </head>
 <body>
+<button id="mobileMenuBtn" onclick="document.getElementById('sidebar').classList.toggle('open')" style="display:none;position:fixed;top:1rem;left:1rem;z-index:200;background:var(--card);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.75rem;border-radius:var(--radius-sm);cursor:pointer;font-size:1.25rem">☰</button>
 <div class="app">
   <aside class="sidebar" id="sidebar">
     <div class="logo">
@@ -518,10 +524,20 @@ async function drawGraph() {
   ctx.fillStyle = '#111113';
   ctx.fillRect(0, 0, w, h);
 
-  const nodesRes = await api('GET', '/v1/memory/nodes?limit=100');
+  const nodesRes = await api('GET', '/v1/memory/nodes?limit=200');
   const edgesRes = await api('GET', '/v1/memory/edges');
-  const nodes = nodesRes.nodes || [];
-  const edges = edgesRes.edges || [];
+  let nodes = nodesRes.nodes || [];
+  let edges = edgesRes.edges || [];
+  
+  // Limit to top 60 most connected nodes for clarity
+  if (nodes.length > 60) {
+    const connCount = {};
+    edges.forEach(e => { connCount[e.src] = (connCount[e.src]||0)+1; connCount[e.dst] = (connCount[e.dst]||0)+1; });
+    nodes.sort((a,b) => (connCount[b.id]||0) - (connCount[a.id]||0));
+    const keepIds = new Set(nodes.slice(0,60).map(n => n.id));
+    nodes = nodes.filter(n => keepIds.has(n.id));
+    edges = edges.filter(e => keepIds.has(e.src) && keepIds.has(e.dst));
+  }
 
   if (nodes.length === 0) {
     ctx.fillStyle = '#71717a';
