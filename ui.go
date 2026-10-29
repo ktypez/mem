@@ -8,7 +8,7 @@ const graphHTML = `<!DOCTYPE html>
 <title>mem — Memory Graph</title>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
-body { margin:0; font-family: sans-serif; background:#0D1011; color:#E6E6E6; }
+body { margin:0; font-family: sans-serif; background:#1a1a2e; color:#E6E6E6; }
 #toolbar { padding:10px; background:#1a1a1a; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 #graph { width:100vw; height:calc(100vh - 50px); }
 .node { cursor:pointer; }
@@ -24,6 +24,7 @@ label { font-size:11px; fill:#ccc; pointer-events:none; }
 </head>
 <body>
 <div id="toolbar">
+  <a href="/" style="color:#4FD1C0;text-decoration:none;font-weight:bold;margin-right:10px;">← Dashboard</a>
   <button onclick="load()" style="padding:4px 12px;cursor:pointer;">Load Graph</button>
   <span id="status">click Load to fetch</span>
   <div class="legend">
@@ -50,7 +51,8 @@ async function load(){
     fetch('/api/edges'),
   ]);
   const nodes=await nr.json();
-  const edges=await er.json();
+  const edgesResp=await er.json();
+  const edges=Array.isArray(edgesResp)?edgesResp:(edgesResp.edges||[]);
   document.getElementById('status').textContent=nodes.length+' nodes, '+edges.length+' edges';
   render(nodes,edges);
 }
@@ -66,7 +68,7 @@ function render(nodes,edges){
     .force('center',d3.forceCenter(w/2,h/2))
     .force('collide',d3.forceCollide(22));
   const link=g.append('g').selectAll('line').data(edges).join('line').attr('class','link')
-    .attr('stroke-width',d=>Math.max(1,d.weight||1));
+    .attr('stroke','#4FD1C0').attr('stroke-opacity',0.6).attr('stroke-width',d=>Math.max(2,d.weight||1));
   const node=g.append('g').selectAll('g').data(nodes).join('g').attr('class','node')
     .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y;})
       .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;})
