@@ -44,6 +44,14 @@ func TestAPIAuthMiddleware(t *testing.T) {
 		t.Fatalf("missing token: expected 401, got %d", unauthorized.Code)
 	}
 
+	rawToken := httptest.NewRecorder()
+	rawReq := httptest.NewRequest(http.MethodGet, "/v1/memory/nodes", nil)
+	rawReq.Header.Set("Authorization", "test-secret")
+	handler.ServeHTTP(rawToken, rawReq)
+	if rawToken.Code != http.StatusUnauthorized {
+		t.Fatalf("token without Bearer scheme: expected 401, got %d", rawToken.Code)
+	}
+
 	authorized := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/memory/nodes", nil)
 	req.Header.Set("Authorization", "Bearer test-secret")
