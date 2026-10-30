@@ -7,10 +7,19 @@ Wants=postgresql.service
 Type=simple
 User=admin
 WorkingDirectory=/home/admin/projects/mem
-Environment=DATABASE_URL=postgres://mem:mem@localhost:5432/mem?sslmode=disable
+EnvironmentFile=/etc/mem/mem.env
 ExecStart=/home/admin/projects/mem/mem
-Restart=always
+Restart=on-failure
 RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target
