@@ -1,7 +1,7 @@
 # Security and deployment notes
 
 ## Required environment
-The service no longer has a built-in PostgreSQL username/password. Configure `/etc/mem/mem.env` as root with mode `0600`:
+The service no longer has a built-in PostgreSQL username/password. The previous source contained a default database credential; because repository history can retain old values, **rotate the PostgreSQL password** on any existing deployment before relying on this change. Configure `/etc/mem/mem.env` as root with mode `0600`:
 
 ```sh
 sudo install -d -m 0750 /etc/mem
