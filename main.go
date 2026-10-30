@@ -561,14 +561,17 @@ func handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(dashboardHTML))
 }
 
-
 func bulkDeleteAllowed(r *http.Request) bool {
 	return os.Getenv("MEM_ENABLE_BULK_DELETE") == "true" && r.Header.Get("X-Confirm-Delete") == "all"
 }
 func isLoopbackListenAddress(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
-	if err != nil { return false }
-	if strings.EqualFold(host, "localhost") { return true }
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
@@ -633,19 +636,25 @@ func main() {
 	mux.HandleFunc("/", handleUI)
 
 	listenAddr := strings.TrimSpace(os.Getenv("MEM_LISTEN_ADDR"))
-	if listenAddr == "" { listenAddr = "127.0.0.1:" + port }
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:" + port
+	}
 	apiToken := strings.TrimSpace(os.Getenv("MEM_API_TOKEN"))
 	if apiToken == "" && !isLoopbackListenAddress(listenAddr) {
 		log.Fatal("MEM_API_TOKEN is required when listening on a non-loopback address")
 	}
-	if apiToken == "" { log.Printf("WARNING: MEM_API_TOKEN is unset; API is unauthenticated but bound to loopback only") }
+	if apiToken == "" {
+		log.Printf("WARNING: MEM_API_TOKEN is unset; API is unauthenticated but bound to loopback only")
+	}
 	server := &http.Server{
 		Addr: listenAddr, Handler: apiAuthMiddleware(apiToken, mux),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 	log.Printf("mem service starting on %s", listenAddr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed { log.Fatal(err) }
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
 
 func handleNodesList(w http.ResponseWriter, r *http.Request) {
@@ -682,5 +691,3 @@ func handleNodesList(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResp(w, 200, nodes)
 }
-
-

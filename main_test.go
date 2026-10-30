@@ -76,6 +76,7 @@ func TestBulkDeleteRequiresOptInAndConfirmation(t *testing.T) {
 	}
 
 	t.Setenv("MEM_ENABLE_BULK_DELETE", "true")
+	req.Header.Del("X-Confirm-Delete")
 	if bulkDeleteAllowed(req) {
 		t.Fatal("bulk delete should require explicit confirmation header")
 	}
