@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -44,13 +48,19 @@ type Edge struct {
 }
 
 func initDB() {
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if dbURL == "" {
-		dbURL = "postgres://mem:mem@localhost:5432/mem?sslmode=disable"
+		log.Fatal("DATABASE_URL is required; refusing to use a built-in database credential")
 	}
 	var err error
 	pool, err = pgxpool.New(context.Background(), dbURL)
 	if err != nil {
+		log.Fatalf("Unable to configure database connection: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
 		log.Fatalf("Unable to connect to database: %v", err)
 	}
 
@@ -95,14 +105,8 @@ func now() string {
 }
 
 func hashBody(body string) string {
-	h := ""
-	for _, c := range body {
-		h = fmt.Sprintf("%s%02x", h, c)
-	}
-	if len(h) > 16 {
-		h = h[:16]
-	}
-	return h
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
 }
 
 func jsonResp(w http.ResponseWriter, status int, v interface{}) {
@@ -112,13 +116,19 @@ func jsonResp(w http.ResponseWriter, status int, v interface{}) {
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
 	var count int
-	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM memory_nodes").Scan(&count)
-	jsonResp(w, 200, map[string]interface{}{
-		"status":  "ok",
-		"service": "mem",
-		"nodes":   count,
-	})
+	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM memory_nodes").Scan(&count); err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "service": "mem", "error": "database query failed"})
+		return
+	}
+	jsonResp(w, http.StatusOK, map[string]interface{}{"status": "ok", "service": "mem", "nodes": count})
 }
 
 func handleNodes(w http.ResponseWriter, r *http.Request) {
@@ -230,12 +240,19 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, 201, node)
 
 	case "DELETE":
+		if !bulkDeleteAllowed(r) {
+			jsonResp(w, http.StatusForbidden, map[string]string{"error": "bulk deletion disabled; set MEM_ENABLE_BULK_DELETE=true and send X-Confirm-Delete: all"})
+			return
+		}
 		_, err := pool.Exec(context.Background(), "DELETE FROM memory_nodes")
 		if err != nil {
 			jsonResp(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
 		jsonResp(w, 200, map[string]string{"status": "deleted_all"})
+	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
 }
 
@@ -271,6 +288,9 @@ func handleNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResp(w, 200, map[string]string{"status": "deleted", "id": id})
+	default:
+		w.Header().Set("Allow", "GET, DELETE")
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
 }
 
@@ -334,16 +354,28 @@ func handleEdges(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, 200, map[string]interface{}{"status": "ok", "count": count})
 
 	case "DELETE":
+		if !bulkDeleteAllowed(r) {
+			jsonResp(w, http.StatusForbidden, map[string]string{"error": "bulk deletion disabled; set MEM_ENABLE_BULK_DELETE=true and send X-Confirm-Delete: all"})
+			return
+		}
 		_, err := pool.Exec(context.Background(), "DELETE FROM memory_edges")
 		if err != nil {
 			jsonResp(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
 		jsonResp(w, 200, map[string]string{"status": "deleted_all_edges"})
+	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
 }
 
 func handleSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
 	q := r.URL.Query().Get("q")
 	if q == "" && r.Method == "POST" {
 		var data map[string]interface{}
@@ -375,28 +407,51 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	var nodes, edges int
-	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM memory_nodes").Scan(&nodes)
-	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM memory_edges").Scan(&edges)
-
-	rows, _ := pool.Query(context.Background(), "SELECT layer, COUNT(*) FROM memory_nodes GROUP BY layer")
+	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM memory_nodes").Scan(&nodes); err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read memory count"})
+		return
+	}
+	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM memory_edges").Scan(&edges); err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read relationship count"})
+		return
+	}
+	rows, err := pool.Query(ctx, "SELECT layer, COUNT(*) FROM memory_nodes GROUP BY layer")
+	if err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read layer counts"})
+		return
+	}
 	defer rows.Close()
 	layers := map[string]int{}
 	for rows.Next() {
-		var l string
-		var c int
-		rows.Scan(&l, &c)
-		layers[l] = c
+		var layer string
+		var count int
+		if err := rows.Scan(&layer, &count); err != nil {
+			jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "unable to read layer row"})
+			return
+		}
+		layers[layer] = count
 	}
-
-	jsonResp(w, 200, map[string]interface{}{
-		"nodes":  nodes,
-		"edges":  edges,
-		"layers": layers,
-	})
+	if err := rows.Err(); err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to finish reading layer counts"})
+		return
+	}
+	jsonResp(w, http.StatusOK, map[string]interface{}{"nodes": nodes, "edges": edges, "layers": layers})
 }
 
 func handleContext(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
 	var query string
 	var limit int = 5
 	if r.Method == "GET" {
@@ -431,8 +486,16 @@ func handleContext(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleExtract(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
 	var data map[string]interface{}
-	json.NewDecoder(r.Body).Decode(&data)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&data); err != nil {
+		jsonResp(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+		return
+	}
 	text := fmt.Sprint(data["text"])
 	if text == "" || text == "<nil>" {
 		jsonResp(w, 400, map[string]string{"error": "text required"})
@@ -445,8 +508,8 @@ func handleExtract(w http.ResponseWriter, r *http.Request) {
 	}
 	nowStr := now()
 	_, err := pool.Exec(context.Background(),
-		`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, confidence, metadata, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, 'fact', 1.0, '{}', $5, $5)`,
+		`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, confidence, metadata, captured_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, 'fact', 1.0, '{}', $5, $5, $5)`,
 		id, text, hashBody(text), layer, nowStr)
 	if err != nil {
 		jsonResp(w, 500, map[string]string{"error": err.Error()})
@@ -456,6 +519,11 @@ func handleExtract(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRebuildEdges(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
 	_, _ = pool.Exec(context.Background(), "DELETE FROM memory_edges WHERE rel IN ('same_topic', 'same_subject')")
 
 	count := 0
@@ -493,6 +561,45 @@ func handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(dashboardHTML))
 }
 
+func bulkDeleteAllowed(r *http.Request) bool {
+	return os.Getenv("MEM_ENABLE_BULK_DELETE") == "true" && r.Header.Get("X-Confirm-Delete") == "all"
+}
+func isLoopbackListenAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+func apiAuthMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		isAPI := strings.HasPrefix(r.URL.Path, "/v1/memory/") ||
+			strings.HasPrefix(r.URL.Path, "/api/nodes") || strings.HasPrefix(r.URL.Path, "/api/edges")
+		if isAPI && token != "" {
+			authorization := r.Header.Get("Authorization")
+			provided := ""
+			if strings.HasPrefix(authorization, "Bearer ") {
+				provided = strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+			}
+			if provided == "" || len(provided) != len(token) || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				jsonResp(w, http.StatusUnauthorized, map[string]string{"error": "valid bearer token required"})
+				return
+			}
+		}
+		if isAPI && r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	initDB()
 	defer pool.Close()
@@ -528,8 +635,24 @@ func main() {
 	mux.HandleFunc("/graph", handleUI)
 	mux.HandleFunc("/", handleUI)
 
-	log.Printf("mem service starting on port %s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	listenAddr := strings.TrimSpace(os.Getenv("MEM_LISTEN_ADDR"))
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:" + port
+	}
+	apiToken := strings.TrimSpace(os.Getenv("MEM_API_TOKEN"))
+	if apiToken == "" && !isLoopbackListenAddress(listenAddr) {
+		log.Fatal("MEM_API_TOKEN is required when listening on a non-loopback address")
+	}
+	if apiToken == "" {
+		log.Printf("WARNING: MEM_API_TOKEN is unset; API is unauthenticated but bound to loopback only")
+	}
+	server := &http.Server{
+		Addr: listenAddr, Handler: apiAuthMiddleware(apiToken, mux),
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
+	}
+	log.Printf("mem service starting on %s", listenAddr)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
@@ -568,5 +691,3 @@ func handleNodesList(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResp(w, 200, nodes)
 }
-
-

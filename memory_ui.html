@@ -1,524 +1,84 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hermes Memory Service — Dashboard</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>mem — Memory Console</title>
 <style>
-  :root {
-    --bg: #0a0a0a; --bg2: #111113; --card: #141414; --card2: #1a1a1a;
-    --border: rgba(255,255,255,0.06); --border2: rgba(255,255,255,0.12);
-    --text: #fafafa; --text2: #a1a1aa; --muted: #71717a;
-    --accent: #f472b6; --accent2: #a78bfa;
-    --accent-grad: linear-gradient(135deg, #f472b6, #a78bfa);
-    --green: #22c55e; --red: #ef4444; --yellow: #eab308; --blue: #3b82f6;
-    --radius: 12px; --radius-sm: 8px;
-    --glow: 0 0 24px rgba(244,114,182,0.35), 0 0 48px rgba(167,139,250,0.18);
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; letter-spacing: -0.01em; }
-  .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
-  .sidebar { background: var(--bg2); border-right: 1px solid var(--border); padding: 1.75rem 1rem; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
-  .logo { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 2.25rem; padding: 0 0.5rem; }
-  .logo-icon { width: 40px; height: 40px; background: var(--accent-grad); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.35rem; box-shadow: var(--glow); position: relative; }
-  .logo-icon::after { content: ''; position: absolute; inset: -2px; border-radius: 14px; background: var(--accent-grad); filter: blur(12px); opacity: 0.35; z-index: -1; }
-  .logo-text { font-weight: 700; font-size: 1.05rem; line-height: 1.1; }
-  .logo-sub { font-size: 0.65rem; color: var(--muted); margin-top: 0.2rem; letter-spacing: 0.08em; text-transform: uppercase; }
-  .logo-kana { font-size: 0.6rem; color: var(--accent); font-weight: 500; letter-spacing: 0.15em; }
-  .nav { display: flex; flex-direction: column; gap: 0.15rem; }
-  .nav-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; border-radius: var(--radius-sm); cursor: pointer; color: var(--text2); font-size: 0.875rem; transition: all 0.15s ease; border: 1px solid transparent; background: none; width: 100%; text-align: left; font-family: inherit; }
-  .nav-item:hover { background: rgba(255,255,255,0.03); color: var(--text); }
-  .nav-item.active { background: rgba(244,114,182,0.08); color: var(--accent2); border-color: rgba(244,114,182,0.25); }
-  .nav-icon { width: 20px; text-align: center; font-size: 0.95rem; }
-  .nav-kana { margin-left: auto; font-size: 0.6rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; letter-spacing: 0.05em; opacity: 0.7; }
-  .main { padding: 2.5rem 2.75rem; overflow-y: auto; }
-  .header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2.25rem; gap: 1rem; }
-  .header h1 { font-size: 1.875rem; font-weight: 700; letter-spacing: -0.03em; line-height: 1; display: flex; align-items: baseline; gap: 0.6rem; }
-  .header .kana { font-size: 0.9rem; color: var(--accent); font-weight: 500; letter-spacing: 0.12em; font-family: 'JetBrains Mono', monospace; opacity: 0.9; }
-  .header p { color: var(--muted); font-size: 0.875rem; margin-top: 0.5rem; }
-  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); display: inline-block; margin-right: 0.5rem; animation: pulse 2s infinite; vertical-align: middle; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-  .page { display: none; }
-  .page.active { display: block; animation: fadeIn 0.2s ease; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-
-  /* Stats */
-  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 2.25rem; }
-  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; position: relative; overflow: hidden; transition: border-color 0.2s; }
-  .stat-card:hover { border-color: var(--border2); }
-  .stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: var(--accent-grad); opacity: 0.6; }
-  .stat-value { font-size: 2.75rem; font-weight: 700; line-height: 1; letter-spacing: -0.04em; background: var(--accent-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .stat-label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; margin-top: 0.75rem; font-weight: 500; }
-  .stat-sub { color: var(--text2); font-size: 0.75rem; margin-top: 0.35rem; }
-
-  /* Cards */
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.75rem; margin-bottom: 1.5rem; }
-  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; gap: 1rem; flex-wrap: wrap; }
-  .card-title { font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 0.5rem; }
-  .card-title .kana { font-size: 0.7rem; color: var(--accent); font-weight: 500; letter-spacing: 0.1em; font-family: 'JetBrains Mono', monospace; }
-  .card-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-
-  /* Forms */
-  .form-group { margin-bottom: 1.1rem; }
-  .form-label { display: block; font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 0.5rem; font-weight: 500; }
-  input, select, textarea { background: var(--bg2); border: 1px solid var(--border); color: var(--text); padding: 0.7rem 0.95rem; border-radius: var(--radius-sm); font-size: 0.875rem; font-family: inherit; width: 100%; transition: border-color 0.15s, box-shadow 0.15s; }
-  input:focus, select:focus, textarea:focus { outline: none; border-color: rgba(244,114,182,0.5); box-shadow: 0 0 0 3px rgba(244,114,182,0.12); }
-  textarea { min-height: 110px; resize: vertical; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; line-height: 1.6; }
-  .form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
-  .form-row > * { flex: 1; min-width: 140px; }
-
-  /* Buttons */
-  .btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.625rem 1.25rem; border-radius: var(--radius-sm); border: 1px solid transparent; cursor: pointer; font-size: 0.875rem; font-weight: 500; transition: all 0.15s ease; font-family: inherit; }
-  .btn-primary { background: var(--accent-grad); color: #0a0a0a; border: none; font-weight: 600; }
-  .btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 4px 16px rgba(244,114,182,0.25); }
-  .btn-secondary { background: transparent; color: var(--text); border-color: var(--border); }
-  .btn-secondary:hover { background: rgba(255,255,255,0.04); border-color: var(--border2); }
-  .btn-danger { background: transparent; color: var(--red); border-color: rgba(239,68,68,0.3); }
-  .btn-danger:hover { background: rgba(239,68,68,0.08); }
-  .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.75rem; }
-  .btn-ghost { background: transparent; color: var(--text2); }
-  .btn-ghost:hover { color: var(--text); background: rgba(255,255,255,0.04); }
-
-  /* Memory items */
-  .memory-list { display: flex; flex-direction: column; gap: 0.75rem; }
-  .memory-item { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.125rem; transition: border-color 0.2s, transform 0.2s; }
-  .memory-item:hover { border-color: var(--border2); }
-  .memory-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.6rem; gap: 0.75rem; }
-  .memory-badges { display: flex; gap: 0.375rem; flex-wrap: wrap; }
-  .badge { font-size: 0.62rem; padding: 0.22rem 0.55rem; border-radius: 6px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; border: 1px solid transparent; }
-  .badge-layer { background: rgba(244,114,182,0.1); color: var(--accent); border-color: rgba(244,114,182,0.25); }
-  .badge-topic { background: rgba(167,139,250,0.1); color: var(--accent2); border-color: rgba(167,139,250,0.25); }
-  .badge-fact { background: rgba(34,197,94,0.1); color: #86efac; border-color: rgba(34,197,94,0.25); }
-  .badge-conf { background: rgba(255,255,255,0.03); color: var(--text2); border-color: var(--border); }
-  .badge:not(.badge-layer):not(.badge-topic):not(.badge-fact):not(.badge-conf) { background: rgba(255,255,255,0.03); color: var(--text2); border-color: var(--border); }
-  .memory-body { font-size: 0.875rem; line-height: 1.65; color: var(--text); margin: 0.6rem 0; }
-  .memory-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem; gap: 0.5rem; }
-  .memory-id { font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: var(--muted); }
-  .memory-time { font-size: 0.62rem; color: var(--muted); }
-
-
-  /* Search */
-  .search-box { position: relative; }
-  .search-box input { padding-left: 2.75rem; }
-  .search-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 0.9rem; }
-  .search-results { margin-top: 1.25rem; }
-
-  /* Context */
-  .context-output { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1.25rem; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; white-space: pre-wrap; max-height: 420px; overflow-y: auto; line-height: 1.7; color: var(--text2); }
-
-  /* Extract */
-  .extract-result { margin-top: 1.25rem; }
-  .extract-item { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.875rem; margin-bottom: 0.6rem; transition: border-color 0.2s; }
-  .extract-item:hover { border-color: var(--border2); }
-  .extract-item .body { font-size: 0.875rem; margin-bottom: 0.35rem; line-height: 1.5; }
-  .extract-item .meta { font-size: 0.7rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
-
-  /* Toast */
-  .toast { position: fixed; bottom: 1.75rem; right: 1.75rem; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.875rem 1.375rem; font-size: 0.875rem; transform: translateY(100px); opacity: 0; transition: all 0.3s ease; z-index: 1000; backdrop-filter: blur(8px); }
-  .toast.show { transform: translateY(0); opacity: 1; }
-  .toast.success { border-color: rgba(34,197,94,0.4); }
-  .toast.error { border-color: rgba(239,68,68,0.4); }
-
-  /* Empty state */
-  .empty-state { text-align: center; padding: 3.5rem 2rem; color: var(--muted); }
-  .empty-state .icon { font-size: 2.5rem; margin-bottom: 1rem; opacity: 0.45; filter: grayscale(0.3); }
-  .empty-state p { font-size: 0.875rem; }
-
-  /* Chart */
-  .chart-container { position: relative; height: 260px; }
-
-  /* Scrollbar */
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
-
-  /* Sidebar footer */
-  .sidebar-footer { margin-top: auto; padding-top: 1.5rem; border-top: 1px solid var(--border); }
-  .sidebar-status { font-size: 0.7rem; color: var(--muted); padding: 0 0.5rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
-  .sidebar-status .sys-ok { color: var(--accent2); font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; letter-spacing: 0.05em; }
-  .sidebar-db { font-size: 0.65rem; color: var(--muted); padding: 0.35rem 0.5rem; font-family: 'JetBrains Mono', monospace; opacity: 0.7; }
-
-  /* Responsive */
-  @media (max-width: 768px) {
-    .app { grid-template-columns: 1fr; }
-    .sidebar { position: fixed; left: -240px; z-index: 100; transition: left 0.3s ease; height: 100vh; }
-    .sidebar.open { left: 0; }
-    #mobileMenuBtn { display: block !important; }
-    #backdrop { display: none; }
-    #backdrop.open { display: block !important; }
-    .main { padding: 1rem; padding-top: 4.5rem; }
-    .stats-grid { grid-template-columns: 1fr 1fr; }
-    .form-row { flex-direction: column; }
-    .form-row > * { min-width: 100%; }
-    .header h1 { font-size: 1.5rem; }
-  }
+:root{color-scheme:dark;--bg:#101114;--panel:#17191e;--panel2:#1d2026;--line:#2b2e36;--text:#f1f2f4;--muted:#999eaa;--soft:#c5c8d0;--accent:#d7e4ff;--accentText:#18243b;--green:#8ed8ad;--red:#ff9b9b;--radius:14px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}button,input,select,textarea{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #a9c7ff;outline-offset:2px}a{color:inherit;text-decoration:none}.shell{min-height:100vh;display:grid;grid-template-columns:232px minmax(0,1fr)}.sidebar{border-right:1px solid var(--line);background:#14161a;padding:24px 15px;display:flex;flex-direction:column;gap:30px}.brand{display:flex;gap:11px;align-items:center;padding:0 9px}.brand-mark{width:35px;height:35px;border-radius:11px;background:#e6ebf4;color:#151a24;display:grid;place-items:center;font-weight:800;font-size:18px}.brand strong{display:block;font-size:16px;letter-spacing:-.4px}.brand small{color:var(--muted);font-size:11px}.nav-label{padding:0 10px;color:#737987;text-transform:uppercase;font-size:10px;font-weight:700;letter-spacing:1.2px;margin-bottom:8px}.nav{display:grid;gap:5px}.nav button{width:100%;border:0;background:transparent;color:#aeb2bd;text-align:left;padding:10px 12px;border-radius:9px;display:flex;align-items:center;gap:11px}.nav button:hover{background:#202329;color:var(--text)}.nav button.active{background:#282c34;color:#fff}.nav .ico{width:18px;text-align:center;color:#c8d0df}.side-bottom{margin-top:auto;border-top:1px solid var(--line);padding:17px 8px 0;color:var(--muted);font-size:12px}.status{display:flex;align-items:center;gap:8px;margin-bottom:7px}.dot{width:7px;height:7px;border-radius:50%;background:#777;display:inline-block}.dot.ok{background:#70c999;box-shadow:0 0 0 3px #70c99920}.dot.bad{background:#f08b8b}.main{min-width:0;padding:30px clamp(16px,3.4vw,48px) 48px;max-width:1500px;width:100%;margin:0 auto}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:28px}.eyebrow{color:var(--muted);font-size:12px;margin-bottom:5px}.topbar h1{font-size:clamp(24px,3vw,31px);line-height:1.2;margin:0;font-weight:650;letter-spacing:-1px}.top-actions{display:flex;gap:8px;align-items:center}.btn{border:1px solid var(--line);background:var(--panel2);color:var(--text);padding:9px 13px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap}.btn:hover{border-color:#555b67;background:#252932}.btn.primary{background:var(--accent);color:var(--accentText);border-color:var(--accent);font-weight:650}.btn.danger{color:var(--red)}.btn.small{padding:6px 9px;font-size:12px}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;margin-bottom:18px}.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 19px;min-width:0}.stat-top{display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:12px}.stat-num{font-size:29px;font-weight:650;letter-spacing:-1.1px;margin-top:12px;line-height:1.1}.stat-note{font-size:11px;color:#7e8490;margin-top:7px}.grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.85fr);gap:16px;align-items:start}.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;min-width:0}.panel-head{padding:17px 19px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.panel-head h2{margin:0;font-size:14px;font-weight:650}.panel-head p{margin:3px 0 0;color:var(--muted);font-size:12px}.panel-body{padding:17px 19px}.memory-list{display:grid}.memory{padding:15px 19px;border-bottom:1px solid #282b32;min-width:0}.memory:last-child{border-bottom:0}.memory:hover{background:#1b1e24}.memory-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}.tags{display:flex;flex-wrap:wrap;gap:6px;min-width:0}.tag{font-size:10px;letter-spacing:.2px;padding:3px 7px;border-radius:5px;background:#262a32;color:#c3c8d2}.tag.layer{background:#253244;color:#c2d9ff}.tag.topic{background:#2c2b30;color:#d9d0ee}.memory-body{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;font-size:13px;color:#e2e4e9}.memory-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:11px;color:#858b98;font-size:10px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.empty{padding:34px 18px;text-align:center;color:var(--muted)}.empty strong{display:block;color:var(--soft);font-weight:600;margin-bottom:5px}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.field,select,textarea{background:#111318;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:9px 11px;min-width:0}.field::placeholder,textarea::placeholder{color:#727784}.search{display:flex;gap:8px}.search input{flex:1;width:100%}.search-hint{color:var(--muted);font-size:11px;margin-top:8px}.layer-bars{display:grid;gap:14px}.bar-row{display:grid;grid-template-columns:82px minmax(0,1fr) 35px;gap:10px;align-items:center;font-size:12px}.bar-name{color:#bfc4ce}.bar-track{height:7px;background:#292d35;border-radius:99px;overflow:hidden}.bar-fill{height:100%;background:#c6d8fa;border-radius:99px}.bar-count{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}.quick-form{display:grid;gap:10px}.quick-form label{font-size:11px;color:var(--muted);display:grid;gap:6px}.quick-form textarea{min-height:100px;resize:vertical}.quick-form .two{display:grid;grid-template-columns:1fr 1fr;gap:9px}.page{display:none}.page.active{display:block}.toast{position:fixed;right:20px;bottom:20px;max-width:calc(100vw - 40px);background:#252a32;border:1px solid #414752;color:#fff;border-radius:10px;padding:12px 16px;box-shadow:0 10px 35px #0005;z-index:20}.toast.error{border-color:#9a5151}.mobile-menu{display:none}.result-count{color:var(--muted);font-size:11px}.footer-note{padding:12px 19px;color:#7d8390;font-size:11px;border-top:1px solid var(--line)}.hidden{display:none!important}
+@media(max-width:980px){.shell{grid-template-columns:200px minmax(0,1fr)}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.grid{grid-template-columns:1fr}.main{padding-top:23px}}
+@media(max-width:680px){.shell{display:block}.sidebar{position:fixed;z-index:10;inset:0 auto 0 0;width:260px;transform:translateX(-105%);transition:transform .2s ease;box-shadow:15px 0 45px #0005}.sidebar.open{transform:translateX(0)}.mobile-menu{display:inline-flex}.main{padding:18px 14px 35px}.topbar{align-items:flex-start;margin-bottom:19px}.topbar h1{font-size:25px}.top-actions{gap:6px}.top-actions .refresh-label{display:none}.stats{gap:9px}.stat{padding:14px}.stat-num{font-size:25px}.stat-note{font-size:10px}.panel-head,.panel-body{padding:14px}.memory{padding:14px}.memory-foot{align-items:flex-start;flex-direction:column;gap:4px}.quick-form .two{grid-template-columns:1fr}.toolbar>*{flex:1}.search{width:100%}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
-<button id="mobileMenuBtn" onclick="document.getElementById('sidebar').classList.toggle('open'); document.getElementById('backdrop').classList.toggle('open')" style="display:none;position:fixed;top:1rem;left:1rem;z-index:200;background:var(--card);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.75rem;border-radius:var(--radius-sm);cursor:pointer;font-size:1.25rem">☰</button>
-<div id="backdrop" onclick="document.getElementById('sidebar').classList.remove('open'); this.classList.remove('open')" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99;backdrop-filter:blur(2px)"></div>
-<div class="app">
-  <aside class="sidebar" id="sidebar">
-    <div class="logo">
-      <div class="logo-icon">🧠</div>
-      <div>
-        <div class="logo-text">Hermes Memory</div>
-        <div class="logo-sub">Knowledge Graph</div>
-        <div class="logo-kana">メモリ · システム</div>
+<div class="shell">
+<aside class="sidebar" id="sidebar">
+  <div class="brand"><div class="brand-mark">m</div><div><strong>mem</strong><small>Memory console</small></div></div>
+  <div><div class="nav-label">Workspace</div><nav class="nav">
+    <button class="active" data-page="overview"><span class="ico">▦</span> Overview</button>
+    <button data-page="memories"><span class="ico">▤</span> Memories</button>
+    <button data-page="search"><span class="ico">⌕</span> Search</button>
+    <button id="graphLink"><span class="ico">⌘</span> Knowledge graph <span style="margin-left:auto;color:#858b98">↗</span></button>
+  </nav></div>
+  <div class="side-bottom"><div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Connecting to service…</span></div><div id="statusDetail">Checking API health</div></div>
+</aside>
+<main class="main">
+  <header class="topbar"><div style="display:flex;gap:10px;align-items:flex-start"><button class="btn mobile-menu" id="menuBtn" aria-label="Open navigation">☰</button><div><div class="eyebrow">MEMORY SYSTEM / WORKSPACE</div><h1 id="pageTitle">Overview</h1></div></div><div class="top-actions"><button class="btn" id="refreshBtn">↻ <span class="refresh-label">Refresh</span></button><button class="btn primary" id="newBtn">＋ New memory</button></div></header>
+  <section class="page active" id="page-overview">
+    <div class="stats">
+      <div class="stat"><div class="stat-top"><span>Total memories</span><span>◈</span></div><div class="stat-num" id="statNodes">—</div><div class="stat-note">Stored memory records</div></div>
+      <div class="stat"><div class="stat-top"><span>Relationships</span><span>⌘</span></div><div class="stat-num" id="statEdges">—</div><div class="stat-note">Connections between memories</div></div>
+      <div class="stat"><div class="stat-top"><span>Memory layers</span><span>▥</span></div><div class="stat-num" id="statLayers">—</div><div class="stat-note">Distinct layer types</div></div>
+      <div class="stat"><div class="stat-top"><span>Topics</span><span>≡</span></div><div class="stat-num" id="statTopics">—</div><div class="stat-note">Distinct topic labels</div></div>
+    </div>
+    <div class="grid">
+      <section class="panel"><div class="panel-head"><div><h2>Recent memories</h2><p>Latest records from your memory store</p></div><button class="btn small" data-goto="memories">View all →</button></div><div id="recentList" class="memory-list"><div class="empty">Loading memories…</div></div></section>
+      <div style="display:grid;gap:16px">
+        <section class="panel"><div class="panel-head"><div><h2>Memory layers</h2><p>Distribution by type</p></div></div><div class="panel-body"><div class="layer-bars" id="layerBars"><div class="empty">Loading…</div></div></div></section>
+        <section class="panel"><div class="panel-head"><div><h2>Quick capture</h2><p>Save a memory without leaving the overview</p></div></div><div class="panel-body"><form class="quick-form" id="quickForm"><label>Memory content<textarea name="body" required maxlength="20000" placeholder="Write a fact, decision, task state, or useful context…"></textarea></label><div class="two"><label>Layer<select name="layer"><option value="semantic">Semantic</option><option value="episodic">Episodic</option><option value="procedural">Procedural</option><option value="profile">Profile</option></select></label><label>Fact type<select name="fact_type"><option value="fact">Fact</option><option value="decision">Decision</option><option value="preference">Preference</option><option value="task">Task state</option><option value="rule">Rule</option></select></label></div><div class="two"><label>Topic (optional)<input class="field" name="topic" maxlength="160" placeholder="e.g. hermes"></label><label>Subject (optional)<input class="field" name="subject" maxlength="160" placeholder="e.g. deployment"></label></div><button class="btn primary" type="submit">Save memory</button></form></div></section>
       </div>
     </div>
-    <nav class="nav">
-      <button class="nav-item active" onclick="showPage('dashboard')"><span class="nav-icon">📊</span> Dashboard<span class="nav-kana">概要</span></button>
-      <button class="nav-item" onclick="showPage('browse')"><span class="nav-icon">📋</span> Browse<span class="nav-kana">一覧</span></button>
-      <button class="nav-item" onclick="showPage('search')"><span class="nav-icon">🔍</span> Search<span class="nav-kana">検索</span></button>
-      <a class="nav-item" href="/graph" style="text-decoration:none"><span class="nav-icon">🌐</span> Graph (D3)<span class="nav-kana">図</span></a>
-    </nav>
-    <div class="sidebar-footer">
-      <div class="sidebar-status">
-        <span class="status-dot"></span> Service: <span id="svcStatus">checking...</span>
-        <span class="sys-ok">システム正常</span>
-      </div>
-      <div class="sidebar-db">DB: ~/.hermes/memory_service.db</div>
-    </div>
-  </aside>
-
-  <main class="main">
-    <!-- Dashboard -->
-    <div id="page-dashboard" class="page active">
-      <div class="header">
-        <div>
-          <h1>Dashboard <span class="kana">ダッシュボード</span></h1>
-          <p>Memory service overview and statistics</p>
-        </div>
-        <button class="btn btn-secondary btn-sm" onclick="refreshAll()">↻ Refresh</button>
-      </div>
-      <div class="stats-grid" id="statsGrid">
-        <div class="stat-card"><div class="stat-value" id="statNodes">-</div><div class="stat-label">Total Nodes</div><div class="stat-sub" id="statNodesSub">memories stored</div></div>
-        <div class="stat-card"><div class="stat-value" id="statEdges">-</div><div class="stat-label">Total Edges</div><div class="stat-sub" id="statEdgesSub">relationships</div></div>
-        <div class="stat-card"><div class="stat-value" id="statLayers">-</div><div class="stat-label">Layers Used</div><div class="stat-sub">memory types</div></div>
-        <div class="stat-card"><div class="stat-value" id="statTopics">-</div><div class="stat-label">Topics</div><div class="stat-sub">categories</div></div>
-      </div>
-      <div class="card">
-        <div class="card-header"><h2 class="card-title">Nodes by Layer <span class="kana">レイヤー別</span></h2></div>
-        <div class="chart-container"><canvas id="layerChart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-header"><h2 class="card-title">Recent Memories <span class="kana">最近のメモリ</span></h2></div>
-        <div class="memory-list" id="recentList"></div>
-      </div>
-    </div>
-
-    <!-- Browse -->
-    <div id="page-browse" class="page">
-      <div class="header">
-        <div>
-          <h1>Browse Memories <span class="kana">ブラウズ</span></h1>
-          <p>View and manage all memory nodes</p>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">All Memory Nodes <span class="kana">全ノード</span></h2>
-          <div class="card-actions">
-            <select id="filterLayer" onchange="loadNodes()" style="width:auto">
-              <option value="">All layers</option>
-              <option value="episodic">episodic</option>
-              <option value="semantic">semantic</option>
-              <option value="procedural">procedural</option>
-              <option value="profile">profile</option>
-            </select>
-            <select id="filterTopic" onchange="loadNodes()" style="width:auto">
-              <option value="">All topics</option>
-            </select>
-            <button class="btn btn-secondary btn-sm" onclick="loadNodes()">↻ Refresh</button>
-            <button class="btn btn-secondary btn-sm" onclick="rebuildEdges()">Rebuild Edges</button>
-          </div>
-        </div>
-        <div class="memory-list" id="memoryList"></div>
-      </div>
-    </div>
-
-    <!-- Search -->
-    <div id="page-search" class="page">
-      <div class="header">
-        <div>
-          <h1>Search Memories <span class="kana">検索</span></h1>
-          <p>Full-text search across all memory nodes</p>
-        </div>
-      </div>
-      <div class="card">
-        <div class="search-box">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="searchQuery" placeholder="Search memories..." onkeydown="if(event.key==='Enter')doSearch()">
-        </div>
-        <div class="form-row" style="margin-top:0.75rem">
-          <button class="btn btn-primary" onclick="doSearch()">Search</button>
-        </div>
-        <div class="search-results" id="searchResults"></div>
-      </div>
-    </div>
-
-    </div>
-  </main>
+  </section>
+  <section class="page" id="page-memories">
+    <section class="panel"><div class="panel-head"><div><h2>All memories</h2><p>Browse and manage stored records</p></div><span class="result-count" id="memoryCount"></span></div><div class="panel-body"><div class="toolbar"><input class="field" id="filterText" placeholder="Filter visible memories…" style="flex:1;min-width:160px"><select id="filterLayer"><option value="">All layers</option><option>episodic</option><option>semantic</option><option>procedural</option><option>profile</option></select><select id="filterTopic"><option value="">All topics</option></select><button class="btn" id="applyFilters">Apply</button></div></div><div id="memoryList" class="memory-list"><div class="empty">Loading memories…</div></div><div class="footer-note">Showing up to 500 records. Use Search for targeted queries.</div></section>
+  </section>
+  <section class="page" id="page-search">
+    <section class="panel"><div class="panel-head"><div><h2>Search memories</h2><p>Find matching content across your stored memories</p></div></div><div class="panel-body"><form class="search" id="searchForm"><input class="field" id="searchQuery" required placeholder="Search for a phrase, project, decision…"><button class="btn primary" type="submit">Search</button></form><div class="search-hint">Search uses the service's current text matching endpoint.</div></div><div id="searchResults" class="memory-list"><div class="empty"><strong>Search your memory</strong>Enter a query above to find matching records.</div></div></section>
+  </section>
+</main>
 </div>
-
-<div class="toast" id="toast"></div>
-
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 <script>
-const API = '';
-let layerChart = null;
-
-function showPage(name) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.getElementById('page-' + name).classList.add('active');
-  event.target.closest('.nav-item').classList.add('active');
-  if (name === 'browse') loadNodes();
-  if (name === 'dashboard') refreshAll();
-  if (name === 'graph') drawGraph();
-}
-
-function showToast(msg, type='success') {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast show ' + type;
-  setTimeout(() => t.className = 'toast', 3000);
-}
-
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-async function api(method, path, body) {
-  const opts = { method, headers: {'Content-Type':'application/json', 'X-Bot-Id':'hermes'} };
-  if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(API + path, opts);
-  return r.json();
-}
-
-async function refreshAll() {
-  const stats = await api('GET', '/v1/memory/stats');
-  document.getElementById('statNodes').textContent = stats.nodes;
-  document.getElementById('statEdges').textContent = stats.edges;
-  // Count layers and topics
-  const nodes = await api('GET', '/v1/memory/nodes?limit=1000');
-  const layers = new Set(nodes.nodes.map(n => n.layer));
-  const topics = new Set(nodes.nodes.map(n => n.topic).filter(Boolean));
-  document.getElementById('statLayers').textContent = layers.size;
-  document.getElementById('statTopics').textContent = topics.size;
-  // Chart
-  const layerCounts = {};
-  nodes.nodes.forEach(n => { layerCounts[n.layer] = (layerCounts[n.layer]||0) + 1; });
-  updateChart(layerCounts);
-  // Recent
-  const recent = nodes.nodes.slice(-5).reverse();
-  const rl = document.getElementById('recentList');
-  if (recent.length === 0) { rl.innerHTML = '<div class="empty-state"><div class="icon">🧠</div><p>No memories yet. Add some!</p></div>'; return; }
-  rl.innerHTML = recent.map(n => memoryItemHtml(n)).join('');
-}
-
-function updateChart(layerCounts) {
-  const ctx = document.getElementById('layerChart');
-  if (layerChart) layerChart.destroy();
-  const labels = Object.keys(layerCounts);
-  const data = Object.values(layerCounts);
-  const colors = ['#8b5cf6','#3b82f6','#22c55e','#eab308'];
-  layerChart = new Chart(ctx, {
-    type: 'doughnut',
-    data: { labels, datasets: [{ data, backgroundColor: colors.slice(0, labels.length), borderWidth: 0 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { color: '#a1a1aa', font: { size: 12 } } } } }
-  });
-}
-
-function memoryItemHtml(n) {
-  return `<div class="memory-item">
-    <div class="memory-header">
-      <div class="memory-badges">
-        <span class="badge badge-layer">${n.layer}</span>
-        <span class="badge badge-fact">${n.fact_type}</span>
-        ${n.topic ? `<span class="badge badge-topic">${esc(n.topic)}</span>` : ''}
-        ${n.subject ? `<span class="badge">${esc(n.subject)}</span>` : ''}
-        <span class="badge badge-conf">conf: ${n.confidence.toFixed(2)}</span>
-      </div>
-      <button class="btn btn-danger btn-sm" onclick="deleteNode('${n.id}')">✕</button>
-    </div>
-    <div class="memory-body">${esc(n.body)}</div>
-    <div class="memory-footer">
-      <span class="memory-id">${n.id}</span>
-      <span class="memory-time">${n.captured_at}</span>
-    </div>
-  </div>`;
-}
-
-async function loadNodes() {
-  const layer = document.getElementById('filterLayer').value;
-  const topic = document.getElementById('filterTopic').value;
-  let url = '/v1/memory/nodes?limit=200';
-  if (layer) url += '&layer=' + encodeURIComponent(layer);
-  if (topic) url += '&topic=' + encodeURIComponent(topic);
-  const d = await api('GET', url);
-  const list = document.getElementById('memoryList');
-  if (!d.nodes || d.nodes.length === 0) { list.innerHTML = '<div class="empty-state"><div class="icon">🧠</div><p>No memories found.</p></div>'; return; }
-  // Update topic filter
-  const topics = [...new Set(d.nodes.map(n => n.topic).filter(Boolean))];
-  const sel = document.getElementById('filterTopic');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">All topics</option>' + topics.map(t => `<option value="${t}">${t}</option>`).join('');
-  sel.value = cur;
-  list.innerHTML = d.nodes.map(memoryItemHtml).join('');
-}
-
-async function deleteNode(id) {
-  if (!confirm('Delete this memory?')) return;
-  await api('DELETE', '/v1/memory/nodes/' + id);
-  showToast('Memory deleted');
-  loadNodes(); refreshAll();
-}
-
-async function doSearch() {
-  const q = document.getElementById('searchQuery').value;
-  if (!q) return;
-  const d = await api('POST', '/v1/memory/search', {query: q, limit: 20});
-  const el = document.getElementById('searchResults');
-  if (!d.results || d.results.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">🔍</div><p>No results found.</p></div>'; return; }
-  el.innerHTML = d.results.map(memoryItemHtml).join('');
-}
-
-async function doContext() {
-  const q = document.getElementById('contextQuery').value;
-  if (!q) return;
-  const d = await api('POST', '/v1/memory/context', {query: q, limit: 5});
-  document.getElementById('contextResult').textContent = d.context || 'No relevant context found.';
-}
-
-async function addMemory() {
-  const body = document.getElementById('addBody').value.trim();
-  if (!body) { showToast('Body is required', 'error'); return; }
-  const node = {
-    body,
-    layer: document.getElementById('addLayer').value,
-    fact_type: document.getElementById('addFactType').value,
-    subject: document.getElementById('addSubject').value || null,
-    topic: document.getElementById('addTopic').value || null,
-    confidence: parseFloat(document.getElementById('addConfidence').value) || 1.0,
-  };
-  const d = await api('POST', '/v1/memory/nodes', node);
-  showToast('Memory added: ' + d.id);
-  document.getElementById('addBody').value = '';
-  refreshAll();
-}
-
-async function doExtract() {
-  const text = document.getElementById('extractText').value.trim();
-  if (!text) { showToast('Text is required', 'error'); return; }
-  showToast('Extracting facts...', 'success');
-  const d = await api('POST', '/v1/memory/extract', {text});
-  const el = document.getElementById('extractResults');
-  if (!d.nodes || d.nodes.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">✨</div><p>No facts extracted.</p></div>'; return; }
-  el.innerHTML = '<h3 style="margin:1rem 0 0.5rem;color:var(--accent2)">Extracted ' + d.extracted + ' facts:</h3>' +
-    d.nodes.map(n => `<div class="extract-item"><div class="body">${esc(n.body)}</div><div class="meta">${n.layer} · ${n.topic || 'no topic'} · conf: ${n.confidence.toFixed(2)}</div></div>`).join('');
-  showToast('Extracted ' + d.extracted + ' facts');
-  refreshAll();
-}
-
-async function rebuildEdges() {
-  const d = await api('POST', '/v1/memory/rebuild-edges', {});
-  showToast('Rebuilt: ' + d.edges_created + ' edges');
-  refreshAll();
-}
-
-async function drawGraph() {
-  const canvas = document.getElementById('graphCanvas');
-  const ctx = canvas.getContext('2d');
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * 2;
-  canvas.height = rect.height * 2;
-  ctx.scale(2, 2);
-  const w = rect.width, h = rect.height;
-  ctx.fillStyle = '#111113';
-  ctx.fillRect(0, 0, w, h);
-
-  const nodesRes = await api('GET', '/v1/memory/nodes?limit=200');
-  const edgesRes = await api('GET', '/v1/memory/edges');
-  let nodes = nodesRes.nodes || [];
-  let edges = edgesRes.edges || [];
-  
-  // Limit to top 60 most connected nodes for clarity
-  if (nodes.length > 60) {
-    const connCount = {};
-    edges.forEach(e => { connCount[e.src] = (connCount[e.src]||0)+1; connCount[e.dst] = (connCount[e.dst]||0)+1; });
-    nodes.sort((a,b) => (connCount[b.id]||0) - (connCount[a.id]||0));
-    const keepIds = new Set(nodes.slice(0,60).map(n => n.id));
-    nodes = nodes.filter(n => keepIds.has(n.id));
-    edges = edges.filter(e => keepIds.has(e.src) && keepIds.has(e.dst));
-  }
-
-  if (nodes.length === 0) {
-    ctx.fillStyle = '#71717a';
-    ctx.font = '16px Inter';
-    ctx.textAlign = 'center';
-    ctx.fillText('No memories to visualize', w/2, h/2);
-    return;
-  }
-
-  // Layout: circular
-  const cx = w/2, cy = h/2, r = Math.min(w, h) * 0.35;
-  const positions = {};
-  nodes.forEach((n, i) => {
-    const angle = (2 * Math.PI * i) / nodes.length;
-    positions[n.id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
-  });
-
-  // Draw edges
-  ctx.strokeStyle = 'rgba(139,92,246,0.3)';
-  ctx.lineWidth = 1;
-  edges.forEach(e => {
-    const s = positions[e.src], d = positions[e.dst];
-    if (s && d) {
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      ctx.lineTo(d.x, d.y);
-      ctx.stroke();
-    }
-  });
-
-  // Draw nodes
-  const layerColors = { episodic: '#3b82f6', semantic: '#8b5cf6', procedural: '#22c55e', profile: '#eab308' };
-  nodes.forEach(n => {
-    const p = positions[n.id];
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 8, 0, 2 * Math.PI);
-    ctx.fillStyle = layerColors[n.layer] || '#71717a';
-    ctx.fill();
-    ctx.strokeStyle = '#fafafa';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    // Label
-    ctx.fillStyle = '#a1a1aa';
-    ctx.font = '10px Inter';
-    ctx.textAlign = 'center';
-    const label = n.body.length > 20 ? n.body.slice(0, 20) + '…' : n.body;
-    ctx.fillText(label, p.x, p.y + 20);
-  });
-}
-
-// Check service status
-async function checkStatus() {
-  try {
-    const r = await fetch(API + '/health');
-    const d = await r.json();
-    document.getElementById('svcStatus').textContent = 'online (' + d.nodes + ' nodes)';
-  } catch {
-    document.getElementById('svcStatus').textContent = 'offline';
-    document.getElementById('svcStatus').style.color = 'var(--red)';
-  }
-}
-
-checkStatus();
+(function(){
+'use strict';
+const $=id=>document.getElementById(id);
+let allNodes=[],toastTimer;
+function escapeHTML(value){return String(value==null?'':value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function notify(message,error){const t=$('toast');t.textContent=message;t.classList.remove('hidden','error');if(error)t.classList.add('error');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.add('hidden'),3200);}
+async function api(path,options){const opts=Object.assign({},options||{});const headers=Object.assign({'Content-Type':'application/json','X-Bot-Id':'hermes'},opts.headers||{});let token=sessionStorage.getItem('mem_api_token')||'';if(token)headers.Authorization='Bearer '+token;opts.headers=headers;let response=await fetch(path,opts);if(response.status===401){const entered=window.prompt('Enter the Memory API bearer token. It is kept only for this browser tab.');if(!entered)throw new Error('API token required');token=entered.trim();sessionStorage.setItem('mem_api_token',token);headers.Authorization='Bearer '+token;response=await fetch(path,opts);if(response.status===401){sessionStorage.removeItem('mem_api_token');throw new Error('Invalid API token');}}let data;try{data=await response.json()}catch(e){throw new Error('The service returned an invalid response.')}if(!response.ok)throw new Error(data.error||('Request failed ('+response.status+')'));return data;}
+function dateLabel(value){if(!value)return 'Date unavailable';const d=new Date(String(value).replace(' ','T')+'Z');return isNaN(d.getTime())?String(value):d.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'});}
+function memoryHTML(n){const topic=n.topic?'<span class="tag topic">'+escapeHTML(n.topic)+'</span>':'';const subject=n.subject?'<span class="tag">'+escapeHTML(n.subject)+'</span>':'';const fact=n.fact_type?'<span class="tag">'+escapeHTML(n.fact_type)+'</span>':'';const confidence=Number.isFinite(Number(n.confidence))?' · confidence '+Number(n.confidence).toFixed(2):'';return '<article class="memory"><div class="memory-top"><div class="tags"><span class="tag layer">'+escapeHTML(n.layer||'unclassified')+'</span>'+fact+topic+subject+'</div><button class="btn small danger delete-btn" data-id="'+escapeHTML(n.id)+'" aria-label="Delete memory">Delete</button></div><div class="memory-body">'+escapeHTML(n.body)+'</div><div class="memory-foot"><span class="mono truncate" title="'+escapeHTML(n.id)+'">'+escapeHTML(n.id)+'</span><span>'+escapeHTML(dateLabel(n.captured_at||n.created_at))+confidence+'</span></div></article>';}
+function renderMemories(target,nodes,emptyTitle,emptyText){const el=$(target);if(!nodes.length){el.innerHTML='<div class="empty"><strong>'+escapeHTML(emptyTitle)+'</strong>'+escapeHTML(emptyText)+'</div>';return;}el.innerHTML=nodes.map(memoryHTML).join('');}
+function renderLayers(nodes){const counts={};nodes.forEach(n=>{const key=n.layer||'unclassified';counts[key]=(counts[key]||0)+1;});const entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]);const max=Math.max(1,...entries.map(x=>x[1]));$('layerBars').innerHTML=entries.length?entries.map(([name,count])=>'<div class="bar-row"><span class="bar-name">'+escapeHTML(name)+'</span><div class="bar-track"><div class="bar-fill" style="width:'+Math.round(count/max*100)+'%"></div></div><span class="bar-count">'+count+'</span></div>').join(''):'<div class="empty">No layer data yet.</div>'; $('statLayers').textContent=entries.length;}
+function refreshFilterOptions(nodes){const select=$('filterTopic');const old=select.value;const topics=Array.from(new Set(nodes.map(n=>n.topic).filter(Boolean))).sort();select.innerHTML='<option value="">All topics</option>'+topics.map(t=>'<option value="'+escapeHTML(t)+'">'+escapeHTML(t)+'</option>').join('');if(topics.includes(old))select.value=old;}
+async function refreshAll(){try{const [stats,nodeData]=await Promise.all([api('/v1/memory/stats'),api('/v1/memory/nodes?limit=500')]);allNodes=Array.isArray(nodeData.nodes)?nodeData.nodes:[];$('statNodes').textContent=stats.nodes??allNodes.length;$('statEdges').textContent=stats.edges??'—';$('statTopics').textContent=new Set(allNodes.map(n=>n.topic).filter(Boolean)).size;renderLayers(allNodes);renderMemories('recentList',allNodes.slice(0,5),'No memories yet','Use Quick capture to save your first memory.');refreshFilterOptions(allNodes);applyFilters();$('statusDot').className='dot ok';$('statusText').textContent='Service online';$('statusDetail').textContent='API responding normally';}catch(err){$('statusDot').className='dot bad';$('statusText').textContent='Service unavailable';$('statusDetail').textContent=err.message;notify(err.message,true);}}
+function applyFilters(){const query=$('filterText').value.trim().toLowerCase();const layer=$('filterLayer').value;const topic=$('filterTopic').value;const filtered=allNodes.filter(n=>(!layer||n.layer===layer)&&(!topic||n.topic===topic)&&(!query||String(n.body||'').toLowerCase().includes(query)||String(n.subject||'').toLowerCase().includes(query)||String(n.topic||'').toLowerCase().includes(query)));$('memoryCount').textContent=filtered.length+' shown';renderMemories('memoryList',filtered,'No matching memories','Try changing your filters.');}
+function showPage(name){document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+name));document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===name));$('pageTitle').textContent=({overview:'Overview',memories:'Memories',search:'Search'})[name]||'Overview';$('sidebar').classList.remove('open');if(name==='memories')applyFilters();}
+async function deleteMemory(id){if(!window.confirm('Delete this memory permanently? This cannot be undone.'))return;try{await api('/v1/memory/nodes/'+encodeURIComponent(id),{method:'DELETE'});notify('Memory deleted');await refreshAll();}catch(err){notify(err.message,true);}}
+document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',()=>showPage(b.dataset.page)));
+document.querySelectorAll('[data-goto]').forEach(b=>b.addEventListener('click',()=>showPage(b.dataset.goto)));
+$('refreshBtn').addEventListener('click',refreshAll);$('menuBtn').addEventListener('click',()=>$('sidebar').classList.toggle('open'));
+$('graphLink').addEventListener('click',()=>{window.location.href='/graph';});
+$('newBtn').addEventListener('click',()=>{showPage('overview');document.querySelector('textarea[name="body"]').focus();document.querySelector('textarea[name="body"]').scrollIntoView({behavior:'smooth',block:'center'});});
+$('applyFilters').addEventListener('click',applyFilters);$('filterText').addEventListener('input',applyFilters);$('filterLayer').addEventListener('change',applyFilters);$('filterTopic').addEventListener('change',applyFilters);
+document.addEventListener('click',e=>{const btn=e.target.closest('.delete-btn');if(btn)deleteMemory(btn.dataset.id);});
+$('quickForm').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.currentTarget);const body=String(f.get('body')||'').trim();if(!body)return;const button=e.currentTarget.querySelector('button[type="submit"]');button.disabled=true;try{await api('/v1/memory/nodes',{method:'POST',body:JSON.stringify({body:body,layer:f.get('layer'),fact_type:f.get('fact_type'),topic:String(f.get('topic')||'').trim(),subject:String(f.get('subject')||'').trim(),confidence:1})});e.currentTarget.reset();notify('Memory saved');await refreshAll();}catch(err){notify(err.message,true);}finally{button.disabled=false;}});
+$('searchForm').addEventListener('submit',async e=>{e.preventDefault();const q=$('searchQuery').value.trim();if(!q)return;$('searchResults').innerHTML='<div class="empty">Searching…</div>';try{const data=await api('/v1/memory/search',{method:'POST',body:JSON.stringify({query:q})});const results=Array.isArray(data.results)?data.results:[];renderMemories('searchResults',results,'No results found','Try a different query.');}catch(err){$('searchResults').innerHTML='<div class="empty"><strong>Search failed</strong>'+escapeHTML(err.message)+'</div>';}}); 
 refreshAll();
-setInterval(checkStatus, 10000);
+})();
 </script>
 </body>
 </html>
