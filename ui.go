@@ -87,46 +87,13 @@ const graphHTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-  
+  <div id="toolbar">
     <div class="logo-mark">🧠</div>
     <div class="toolbar-title">Memory Graph <span class="toolbar-kana">グラフ</span></div>
     <a href="/" class="nav-link">← ダッシュボード</a>
     <button class="btn" onclick="load()">Load Graph</button>
     <button class="btn secondary" onclick="resetView()">Reset View</button>
     <span id="status">click Load to fetch</span>
-    <div class="filters">
-      <div class="filter-group">
-        <label>Layer:</label>
-        <select id="filterLayer" onchange="filterGraph()">
-          <option value="">All Layers</option>
-          <option value="preference">preference</option>
-          <option value="identity">identity</option>
-          <option value="context">context</option>
-          <option value="experience">experience</option>
-          <option value="activity">activity</option>
-          <option value="persona">persona</option>
-          <option value="note">note</option>
-          <option value="semantic">semantic</option>
-          <option value="episodic">episodic</option>
-          <option value="procedural">procedural</option>
-          <option value="profile">profile</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <label>Topic:</label>
-        <select id="filterTopic" onchange="filterGraph()"></select>
-      </div>
-      <div class="filter-group">
-        <label>Edges:</label>
-        <select id="filterEdges" onchange="filterEdges()">
-          <option value="all">All Edges</option>
-          <option value="same_topic">Same Topic</option>
-          <option value="same_subject">Same Subject</option>
-          <option value="same_day">Same Day</option>
-          <option value="related">Related Only</option>
-        </select>
-      </div>
-    </div>
     <div class="legend">
       <span><i style="background:#4FD1C0"></i>preference</span>
       <span><i style="background:#F6AD55"></i>identity</span>
@@ -141,24 +108,7 @@ const graphHTML = `<!DOCTYPE html>
       <span><i style="background:#ec4899"></i>profile</span>
     </div>
   </div>
-  <div class="logo-mark">🧠</div>
-  <div class="toolbar-title">Memory Graph <span class="toolbar-kana">グラフ</span></div>
-  <a href="/" class="nav-link">← ダッシュボード</a>
-  <button class="btn" onclick="load()">Load Graph</button>
-  <button class="btn secondary" onclick="resetView()">Reset View</button>
-  <span id="status">click Load to fetch</span>
-  <div class="legend">
-    <span><i style="background:#4FD1C0"></i>preference</span>
-    <span><i style="background:#F6AD55"></i>identity</span>
-    <span><i style="background:#90CDF4"></i>context</span>
-    <span><i style="background:#FC8181"></i>experience</span>
-    <span><i style="background:#68D391"></i>activity</span>
-    <span><i style="background:#F687B3"></i>persona</span>
-    <span><i style="background:#A0AEC0"></i>note</span>
-    <span><i style="background:#B794F4"></i>other</span>
-  </div>
-</div>
-<svg id="graph"></svg>
+  <svg id="graph"></svg>
 <div class="tooltip" id="tooltip"></div>
 <div class="info-badge" id="infoBadge" style="display:none">
   Nodes: <span class="count" id="nodeCount">0</span> · Edges: <span class="count" id="edgeCount">0</span>
@@ -179,57 +129,21 @@ let currentTransform = d3.zoomIdentity;
 async function load(){
   document.getElementById('status').textContent='loading...';
   try {
-    const layerFilter = document.getElementById('filterLayer')?.value || '';
-    const topicFilter = document.getElementById('filterTopic')?.value || '';
-    const edgeFilter = document.getElementById('filterEdges')?.value || 'all';
-
-    // Fetch nodes with optional filters
-    let nodeUrl = '/api/nodes';
-    const params = [];
-    if (layerFilter) params.push('layer=' + encodeURIComponent(layerFilter));
-    if (topicFilter) params.push('topic=' + encodeURIComponent(topicFilter));
-    if (params.length > 0) nodeUrl += '?' + params.join('&');
-
     const [nr,er]=await Promise.all([
-      fetch(nodeUrl),
+      fetch('/api/nodes'),
       fetch('/api/edges'),
     ]);
     if(!nr.ok || !er.ok) throw new Error('HTTP '+nr.status+' / '+er.status);
     const nodes=await nr.json();
     const edgesResp=await er.json();
     const edges=Array.isArray(edgesResp)?edgesResp:(edgesResp.edges||[]);
-
-    // Filter edges by type
-    let filteredEdges = edges;
-    if (edgeFilter === 'same_topic') {
-      filteredEdges = edges.filter(e => {
-        const src = nodes.find(n => n.id === e.src);
-        const dst = nodes.find(n => n.id === e.dst);
-        return src && dst && src.topic === dst.topic;
-      });
-    } else if (edgeFilter === 'same_subject') {
-      filteredEdges = edges.filter(e => {
-        const src = nodes.find(n => n.id === e.src);
-        const dst = nodes.find(n => n.id === e.dst);
-        return src && dst && src.subject === dst.subject;
-      });
-    } else if (edgeFilter === 'same_day') {
-      filteredEdges = edges.filter(e => {
-        const src = nodes.find(n => n.id === e.src);
-        const dst = nodes.find(n => n.id === e.dst);
-        return src && dst && src.created_at === dst.created_at;
-      });
-    } else if (edgeFilter === 'related') {
-      filteredEdges = edges.filter(e => e.rel === 'related' || e.rel === 'edge');
-    }
-
     // Map src/dst to source/target for D3 forceLink
-    filteredEdges.forEach(e=>{ e.source=e.src; e.target=e.dst; });
-    document.getElementById('status').textContent=nodes.length+' nodes, '+filteredEdges.length+' edges';
+    edges.forEach(e=>{ e.source=e.src; e.target=e.dst; });
+    document.getElementById('status').textContent=nodes.length+' nodes, '+edges.length+' edges';
     document.getElementById('nodeCount').textContent=nodes.length;
-    document.getElementById('edgeCount').textContent=filteredEdges.length;
+    document.getElementById('edgeCount').textContent=edges.length;
     document.getElementById('infoBadge').style.display='block';
-    render(nodes,filteredEdges);
+    render(nodes,edges);
   } catch(err) {
     document.getElementById('status').textContent='error: '+err.message;
     console.error(err);
@@ -306,51 +220,6 @@ function render(nodes,edges){
 function zoomIn(){ svg.transition().call(zoom.scaleBy,1.5); }
 function zoomOut(){ svg.transition().call(zoom.scaleBy,0.67); }
 function resetView(){ svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity); }
-
-// Filter functions for graph page
-function populateFilters() {
-  const layerSelect = document.getElementById('filterLayer');
-  const topicSelect = document.getElementById('filterTopic');
-  const edgeSelect = document.getElementById('filterEdges');
-  if (!layerSelect || !topicSelect || !edgeSelect) return;
-
-  // Populate layer filter
-  const layers = ['preference','identity','context','experience','activity','persona','note','semantic','episodic','procedural','profile'];
-  layerSelect.innerHTML = '<option value="">All Layers</option>' + layers.map(l => '<option value="' + l + '">' + l + '</option>').join('');
-
-  // Populate topic filter
-  fetch('/v1/memory/nodes?limit=1000').then(r => r.json()).then(nodes => {
-    const topics = [...new Set(nodes.nodes.map(n => n.topic).filter(Boolean))];
-    topicSelect.innerHTML = '<option value="">All Topics</option>' + topics.map(t => '<option value="' + t + '">' + t + '</option>').join('');
-  });
-
-  // Populate edge filter
-  const edges = ['all','same_topic','same_subject','same_day','related'];
-  edgeSelect.innerHTML = edges.map(e => '<option value="' + e + '">' + e + '</option>').join('');
-}
-
-populateFilters();
-
-function filterGraph() {
-  const layer = document.getElementById('filterLayer')?.value || '';
-  const topic = document.getElementById('filterTopic')?.value || '';
-  if (!layer && !topic) {
-    load(); // Reset to all
-    return;
-  }
-  // Reload with filters
-  load();
-}
-
-function filterEdges() {
-  const edgeType = document.getElementById('filterEdges')?.value || 'all';
-  if (edgeType === 'all') {
-    load(); // Reset
-    return;
-  }
-  // Reload with edge filter
-  load();
-}
 
 load();
 window.addEventListener('resize',()=>{ if(simulation){ const w=window.innerWidth,h=window.innerHeight-56; svg.attr('width',w).attr('height',h); } });
