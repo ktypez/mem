@@ -407,25 +407,43 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	var nodes, edges int
-	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM memory_nodes").Scan(&nodes)
-	pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM memory_edges").Scan(&edges)
-
-	rows, _ := pool.Query(context.Background(), "SELECT layer, COUNT(*) FROM memory_nodes GROUP BY layer")
+	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM memory_nodes").Scan(&nodes); err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read memory count"})
+		return
+	}
+	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM memory_edges").Scan(&edges); err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read relationship count"})
+		return
+	}
+	rows, err := pool.Query(ctx, "SELECT layer, COUNT(*) FROM memory_nodes GROUP BY layer")
+	if err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read layer counts"})
+		return
+	}
 	defer rows.Close()
 	layers := map[string]int{}
 	for rows.Next() {
-		var l string
-		var c int
-		rows.Scan(&l, &c)
-		layers[l] = c
+		var layer string
+		var count int
+		if err := rows.Scan(&layer, &count); err != nil {
+			jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "unable to read layer row"})
+			return
+		}
+		layers[layer] = count
 	}
-
-	jsonResp(w, 200, map[string]interface{}{
-		"nodes":  nodes,
-		"edges":  edges,
-		"layers": layers,
-	})
+	if err := rows.Err(); err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to finish reading layer counts"})
+		return
+	}
+	jsonResp(w, http.StatusOK, map[string]interface{}{"nodes": nodes, "edges": edges, "layers": layers})
 }
 
 func handleContext(w http.ResponseWriter, r *http.Request) {
@@ -559,7 +577,11 @@ func apiAuthMiddleware(token string, next http.Handler) http.Handler {
 		isAPI := strings.HasPrefix(r.URL.Path, "/v1/memory/") ||
 			strings.HasPrefix(r.URL.Path, "/api/nodes") || strings.HasPrefix(r.URL.Path, "/api/edges")
 		if isAPI && token != "" {
-			provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			authorization := r.Header.Get("Authorization")
+			provided := ""
+			if strings.HasPrefix(authorization, "Bearer ") {
+				provided = strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+			}
 			if provided == "" || len(provided) != len(token) || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				jsonResp(w, http.StatusUnauthorized, map[string]string{"error": "valid bearer token required"})
