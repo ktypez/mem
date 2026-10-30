@@ -136,7 +136,17 @@ async function load(){
     if(!nr.ok || !er.ok) throw new Error('HTTP '+nr.status+' / '+er.status);
     const nodes=await nr.json();
     const edgesResp=await er.json();
-    const edges=Array.isArray(edgesResp)?edgesResp:(edgesResp.edges||[]);
+    const rawEdges=Array.isArray(edgesResp)?edgesResp:(edgesResp.edges||[]);
+
+    // Deduplicate edges: keep only one edge per src-dst pair
+    const seenPairs = new Set();
+    const edges = rawEdges.filter(e => {
+      const key = e.src < e.dst ? e.src + '-' + e.dst : e.dst + '-' + e.src;
+      if (seenPairs.has(key)) return false;
+      seenPairs.add(key);
+      return true;
+    });
+
     // Map src/dst to source/target for D3 forceLink
     edges.forEach(e=>{ e.source=e.src; e.target=e.dst; });
     document.getElementById('status').textContent=nodes.length+' nodes, '+edges.length+' edges';
@@ -155,6 +165,15 @@ function render(nodes,edges){
   const w=window.innerWidth, h=window.innerHeight-56;
   svg.attr('width',w).attr('height',h);
   g=svg.append('g');
+
+  // Update legend to only show layers that exist
+  const existingLayers = [...new Set(nodes.map(n => n.layer))];
+  const legendEl = document.querySelector('.legend');
+  if (legendEl) {
+    legendEl.innerHTML = existingLayers.map(l =>
+      '<span><i style="background:' + (colors[l] || '#B794F4') + '"></i>' + l + '</span>'
+    ).join('');
+  }
 
   zoom=d3.zoom().scaleExtent([0.05,8]).on('zoom',e=>{
     g.attr('transform',e.transform);
