@@ -329,6 +329,8 @@ function populateFilters() {
   edgeSelect.innerHTML = edges.map(e => '<option value="' + e + '">' + e + '</option>').join('');
 }
 
+populateFilters();
+
 function filterGraph() {
   const layer = document.getElementById('filterLayer')?.value || '';
   const topic = document.getElementById('filterTopic')?.value || '';
