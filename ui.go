@@ -11,14 +11,12 @@ const graphHTML = `<!DOCTYPE html>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
   :root {
-    --bg: #0a0a0a; --bg2: #111113; --card: #141414;
-    --border: rgba(255,255,255,0.06); --border2: rgba(255,255,255,0.12);
-    --text: #fafafa; --text2: #a1a1aa; --muted: #71717a;
-    --accent: #f472b6; --accent2: #a78bfa;
-    --accent-grad: linear-gradient(135deg, #f472b6, #a78bfa);
-    --green: #22c55e; --red: #ef4444; --yellow: #eab308; --blue: #3b82f6;
-    --radius: 12px; --radius-sm: 8px;
-    --glow: 0 0 24px rgba(244,114,182,0.35), 0 0 48px rgba(167,139,250,0.18);
+    --bg: #101114; --bg2: #17191e; --card: #1d2026;
+    --border: #2b2e36; --border2: #3a3d46;
+    --text: #f1f2f4; --text2: #c5c8d0; --muted: #999eaa;
+    --accent: #d7e4ff; --accent2: #a9c7ff;
+    --green: #8ed8ad; --red: #ff9b9b; --yellow: #eab308; --blue: #90cdf4;
+    --radius: 14px; --radius-sm: 9px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow: hidden; letter-spacing: -0.01em; }
@@ -27,24 +25,23 @@ const graphHTML = `<!DOCTYPE html>
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap; height: 56px;
   }
   .logo-mark {
-    width: 32px; height: 32px; background: var(--accent-grad); border-radius: 8px;
+    width: 32px; height: 32px; background: var(--accent); border-radius: 8px;
     display: flex; align-items: center; justify-content: center; font-size: 1rem;
-    box-shadow: var(--glow); position: relative; flex-shrink: 0;
+    color: var(--bg); font-weight: 700; flex-shrink: 0;
   }
-  .logo-mark::after { content:''; position:absolute; inset:-2px; border-radius:10px; background:var(--accent-grad); filter:blur(10px); opacity:0.3; z-index:-1; }
   .toolbar-title { font-weight: 700; font-size: 0.95rem; display: flex; align-items: baseline; gap: 8px; }
-  .toolbar-kana { font-size: 0.7rem; color: var(--accent); font-family: 'JetBrains Mono', monospace; letter-spacing: 0.1em; }
+  .toolbar-kana { font-size: 0.7rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; letter-spacing: 0.1em; }
   .btn {
-    padding: 6px 14px; cursor: pointer; background: rgba(244,114,182,0.08);
-    border: 1px solid rgba(244,114,182,0.25); color: var(--accent2);
+    padding: 9px 13px; cursor: pointer; background: var(--card);
+    border: 1px solid var(--border); color: var(--text);
     border-radius: var(--radius-sm); font-family: inherit; font-size: 0.8rem; font-weight: 500;
     transition: all 0.15s;
   }
-  .btn:hover { background: rgba(244,114,182,0.15); border-color: rgba(244,114,182,0.4); }
+  .btn:hover { background: #252932; border-color: #555b67; }
   .btn.secondary {
-    background: rgba(255,255,255,0.03); border-color: var(--border2); color: var(--text2);
+    background: var(--card); border-color: var(--border); color: var(--text2);
   }
-  .btn.secondary:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+  .btn.secondary:hover { background: #252932; color: var(--text); }
   #status { color: var(--muted); font-size: 0.75rem; font-family: 'JetBrains Mono', monospace; }
   .legend { display: flex; gap: 10px; margin-left: auto; flex-wrap: wrap; align-items: center; }
   .legend span { display: inline-flex; align-items: center; gap: 5px; font-size: 0.7rem; color: var(--text2); }
@@ -60,7 +57,7 @@ const graphHTML = `<!DOCTYPE html>
   .node circle { stroke: #fff; stroke-width: 1.5px; transition: r 0.2s; }
   .node:hover circle { stroke: var(--accent); stroke-width: 2.5px; }
   .node text { font-size: 10px; fill: var(--text2); pointer-events: none; font-family: 'Inter', sans-serif; }
-  .link { stroke: var(--accent); stroke-opacity: 0.25; stroke-width: 1px; }
+  .link { stroke: var(--accent2); stroke-opacity: 0.3; stroke-width: 1px; }
   .tooltip {
     position: absolute; background: var(--card); color: var(--text); padding: 10px 14px;
     border-radius: var(--radius-sm); font-size: 0.8rem; max-width: 320px; pointer-events: none;
@@ -77,7 +74,7 @@ const graphHTML = `<!DOCTYPE html>
     border: 1px solid var(--border2); color: var(--text2); cursor: pointer; font-size: 1rem;
     display: flex; align-items: center; justify-content: center; transition: all 0.15s;
   }
-  .controls button:hover { background: rgba(244,114,182,0.1); color: var(--accent); border-color: rgba(244,114,182,0.3); }
+  .controls button:hover { background: #252932; color: var(--accent); border-color: #555b67; }
   .info-badge {
     position: absolute; top: 72px; left: 20px; background: var(--card); border: 1px solid var(--border);
     border-radius: var(--radius-sm); padding: 8px 12px; font-size: 0.75rem; color: var(--text2);
@@ -88,7 +85,7 @@ const graphHTML = `<!DOCTYPE html>
 </head>
 <body>
   <div id="toolbar">
-    <div class="logo-mark">🧠</div>
+    <div class="logo-mark">m</div>
     <div class="toolbar-title">Memory Graph <span class="toolbar-kana">グラフ</span></div>
     <a href="/" class="nav-link">← ダッシュボード</a>
     <button class="btn" onclick="load()">Load Graph</button>
@@ -126,16 +123,31 @@ const svg = d3.select('#graph');
 let simulation, zoom, g, node, link;
 let currentTransform = d3.zoomIdentity;
 
+async function api(path){
+  const headers={'Content-Type':'application/json'};
+  let token=sessionStorage.getItem('mem_api_token')||'';
+  if(token) headers.Authorization='Bearer '+token;
+  let response=await fetch(path,{headers});
+  if(response.status===401){
+    const entered=window.prompt('Enter the Memory API bearer token. It is kept only for this browser tab.');
+    if(!entered) throw new Error('API token required');
+    token=entered.trim();
+    sessionStorage.setItem('mem_api_token',token);
+    headers.Authorization='Bearer '+token;
+    response=await fetch(path,{headers});
+    if(response.status===401){ sessionStorage.removeItem('mem_api_token'); throw new Error('Invalid API token'); }
+  }
+  if(!response.ok) throw new Error('HTTP '+response.status);
+  return response.json();
+}
+
 async function load(){
   document.getElementById('status').textContent='loading...';
   try {
-    const [nr,er]=await Promise.all([
-      fetch('/api/nodes'),
-      fetch('/api/edges'),
+    const [nodes,edgesResp]=await Promise.all([
+      api('/api/nodes'),
+      api('/api/edges'),
     ]);
-    if(!nr.ok || !er.ok) throw new Error('HTTP '+nr.status+' / '+er.status);
-    const nodes=await nr.json();
-    const edgesResp=await er.json();
     const rawEdges=Array.isArray(edgesResp)?edgesResp:(edgesResp.edges||[]);
 
     // Deduplicate edges: keep only one edge per src-dst pair
