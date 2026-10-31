@@ -1,12 +1,15 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -45,6 +49,14 @@ type Edge struct {
 	Rel       string  `json:"rel"`
 	Weight    float64 `json:"weight"`
 	CreatedAt string  `json:"created_at"`
+}
+
+// Backup represents a full database export
+type Backup struct {
+	Version   string `json:"version"`
+	Timestamp string `json:"timestamp"`
+	Nodes     []Node `json:"nodes"`
+	Edges     []Edge `json:"edges"`
 }
 
 func initDB() {
@@ -377,7 +389,7 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query().Get("q")
-	if q == "" && r.Method == "POST" {
+	if q == "" && r.Method == http.MethodPost {
 		var data map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&data)
 		q = fmt.Sprint(data["query"])
@@ -454,7 +466,7 @@ func handleContext(w http.ResponseWriter, r *http.Request) {
 	}
 	var query string
 	var limit int = 5
-	if r.Method == "GET" {
+	if r.Method == http.MethodGet {
 		query = r.URL.Query().Get("q")
 		if l := r.URL.Query().Get("limit"); l != "" {
 			fmt.Sscanf(l, "%d", &limit)
@@ -551,6 +563,158 @@ func handleRebuildEdges(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResp(w, 200, map[string]interface{}{"status": "ok", "edges_created": count})
 }
+
+func handleBackup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	// Check for gzip parameter
+	useGzip := r.URL.Query().Get("gzip") == "true"
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	// Fetch all nodes
+	nodes := []Node{}
+	rows, err := pool.Query(ctx, `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at FROM memory_nodes ORDER BY created_at DESC`)
+	if err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read nodes for backup"})
+		return
+	}
+	for rows.Next() {
+		var n Node
+		var captured, created, updated interface{}
+		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated); err != nil {
+			rows.Close()
+			continue
+		}
+		n.CapturedAt = fmt.Sprint(captured)
+		n.CreatedAt = fmt.Sprint(created)
+		n.UpdatedAt = fmt.Sprint(updated)
+		nodes = append(nodes, n)
+	}
+	rows.Close()
+
+	// Fetch all edges
+	edges := []Edge{}
+	rows2, err := pool.Query(ctx, `SELECT id, src, dst, rel, weight, created_at FROM memory_edges ORDER BY created_at DESC`)
+	if err != nil {
+		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read edges for backup"})
+		return
+	}
+	for rows2.Next() {
+		var e Edge
+		var created interface{}
+		if err := rows2.Scan(&e.ID, &e.Src, &e.Dst, &e.Rel, &e.Weight, &created); err != nil {
+			rows2.Close()
+			continue
+		}
+		e.CreatedAt = fmt.Sprint(created)
+		edges = append(edges, e)
+	}
+	rows2.Close()
+
+	backup := Backup{
+		Version:   "1.0",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Nodes:     nodes,
+		Edges:     edges,
+	}
+
+	if useGzip {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", "attachment; filename=mem-backup.json.gz")
+		gw := gzip.NewWriter(w)
+		defer gw.Close()
+		json.NewEncoder(gw).Encode(backup)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=mem-backup.json")
+	json.NewEncoder(w).Encode(backup)
+}
+
+func handleRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	// Check content type for gzip
+	isGzip := r.Header.Get("Content-Encoding") == "gzip" ||
+		(strings.HasPrefix(r.Header.Get("Content-Type"), "application/gzip"))
+
+	var reader io.Reader = r.Body
+	if isGzip {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			jsonResp(w, http.StatusBadRequest, map[string]string{"error": "invalid gzip data"})
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	var backup Backup
+	if err := json.NewDecoder(reader).Decode(&backup); err != nil {
+		jsonResp(w, http.StatusBadRequest, map[string]string{"error": "invalid backup JSON data"})
+		return
+	}
+
+	// Clear existing data
+	if _, err := pool.Exec(ctx, "DELETE FROM memory_nodes"); err != nil {
+		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to clear nodes"})
+		return
+	}
+	if _, err := pool.Exec(ctx, "DELETE FROM memory_edges"); err != nil {
+		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to clear edges"})
+		return
+	}
+
+	// Restore nodes via COPY for speed
+	nodeRows := make([][]any, 0, len(backup.Nodes))
+	for _, n := range backup.Nodes {
+		nodeRows = append(nodeRows, []any{
+			n.ID, n.Body, hashBody(n.Body), n.Layer, n.FactType, n.Subject, n.Confidence, n.Metadata, n.Topic, n.CapturedAt, n.CreatedAt, n.UpdatedAt,
+		})
+	}
+	nodeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, []string{
+		"id", "body", "hash", "layer", "fact_type", "subject", "confidence", "metadata", "topic", "captured_at", "created_at", "updated_at",
+	}, pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
+	if err != nil {
+		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to restore nodes: " + err.Error()})
+		return
+	}
+
+	// Restore edges via COPY for speed
+	edgeRows := make([][]any, 0, len(backup.Edges))
+	for _, e := range backup.Edges {
+		edgeRows = append(edgeRows, []any{e.ID, e.Src, e.Dst, e.Rel, e.Weight, e.CreatedAt})
+	}
+	edgeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_edges"}, []string{
+		"id", "src", "dst", "rel", "weight", "created_at",
+	}, pgx.CopyFromSlice(len(edgeRows), func(i int) ([]any, error) { return edgeRows[i], nil }))
+	if err != nil {
+		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to restore edges: " + err.Error()})
+		return
+	}
+
+	jsonResp(w, 200, map[string]interface{}{
+		"status":    "restored",
+		"nodes":     nodeCount,
+		"edges":     edgeCount,
+		"timestamp": backup.Timestamp,
+	})
+}
+
 func handleUI(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/graph" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -564,6 +728,7 @@ func handleUI(w http.ResponseWriter, r *http.Request) {
 func bulkDeleteAllowed(r *http.Request) bool {
 	return os.Getenv("MEM_ENABLE_BULK_DELETE") == "true" && r.Header.Get("X-Confirm-Delete") == "all"
 }
+
 func isLoopbackListenAddress(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -575,6 +740,7 @@ func isLoopbackListenAddress(addr string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
+
 func apiAuthMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		isAPI := strings.HasPrefix(r.URL.Path, "/v1/memory/") ||
@@ -601,60 +767,289 @@ func apiAuthMiddleware(token string, next http.Handler) http.Handler {
 }
 
 func main() {
+	// Parse CLI arguments
+	osArgs := os.Args[1:]
+	if len(osArgs) == 0 {
+		osArgs = []string{"help"}
+	}
+	cmd := osArgs[0]
+	rest := osArgs[1:]
+
+	var showHelp bool
+	var backupFile string
+	var restoreFile string
+	var fileFlag string
+	var useGzip bool
+
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.BoolVar(&showHelp, "help", false, "show help")
+	fs.BoolVar(&showHelp, "h", false, "show help (shorthand)")
+	fs.StringVar(&backupFile, "backup", "", "backup database to file (JSON)")
+	fs.StringVar(&restoreFile, "restore", "", "restore database from file (JSON or .gz)")
+	fs.StringVar(&fileFlag, "file", "", "file path for backup/restore (use - for stdin/stdout)")
+	fs.BoolVar(&useGzip, "gzip", false, "use gzip compression for backup")
+	if err := fs.Parse(rest); err != nil {
+		fmt.Println(err)
+		return
+	}
+	extra := fs.Args()
+
+	// Handle help
+	if showHelp || cmd == "help" {
+		fmt.Print(`mem - Memory Service CLI
+
+Usage:
+  mem server              Start the HTTP server
+  mem backup --file FILE  Export database to file (use - for stdout)
+  mem restore --file FILE Import database from file (use - for stdin)
+  mem help                Show this help
+
+Environment variables:
+  DATABASE_URL          PostgreSQL connection string (required)
+  MEM_API_TOKEN         API bearer token (required for non-loopback)
+  MEM_LISTEN_ADDR       Bind address (default: [IP_ADDRESS]:3200)
+
+Examples:
+  mem server                    # Start the HTTP server
+  mem backup --file backup.json              # Export to JSON
+  mem backup --file backup.json.gz --gzip      # Export to gzipped JSON
+  mem restore --file backup.json             # Import from JSON
+  mem backup | ssh remote mem restore --file -   # Remote backup
+`)
+		return
+	}
+
+	if len(extra) > 0 {
+		// ignore unexpected positional args
+	}
+	if cmd == "server" {
+		initDB()
+		defer pool.Close()
+
+		mux := http.NewServeMux()
+
+		// Health
+		mux.HandleFunc("/health", handleHealth)
+
+		// API aliases (memoh-style: /api/nodes, /api/edges)
+		mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				handleNodesList(w, r)
+			} else {
+				handleNodes(w, r)
+			}
+		})
+		mux.HandleFunc("/api/edges", func(w http.ResponseWriter, r *http.Request) {
+			handleEdges(w, r)
+		})
+
+		// v1 API
+		mux.HandleFunc("/v1/memory/nodes", handleNodes)
+		mux.HandleFunc("/v1/memory/nodes/", handleNode)
+		mux.HandleFunc("/v1/memory/edges", handleEdges)
+		mux.HandleFunc("/v1/memory/search", handleSearch)
+		mux.HandleFunc("/v1/memory/stats", handleStats)
+		mux.HandleFunc("/v1/memory/context", handleContext)
+		mux.HandleFunc("/v1/memory/extract", handleExtract)
+		mux.HandleFunc("/v1/memory/rebuild-edges", handleRebuildEdges)
+		mux.HandleFunc("/v1/memory/backup", handleBackup)
+		mux.HandleFunc("/v1/memory/restore", handleRestore)
+
+		// UI
+		mux.HandleFunc("/graph", handleUI)
+		mux.HandleFunc("/", handleUI)
+
+		listenAddr := strings.TrimSpace(os.Getenv("MEM_LISTEN_ADDR"))
+		if listenAddr == "" {
+			listenAddr = "[IP_ADDRESS]:" + port
+		}
+		apiToken := strings.TrimSpace(os.Getenv("MEM_API_TOKEN"))
+		if apiToken == "" && !isLoopbackListenAddress(listenAddr) {
+			log.Fatal("MEM_API_TOKEN is required when listening on a non-loopback address")
+		}
+		if apiToken == "" {
+			log.Printf("WARNING: MEM_API_TOKEN is unset; API is unauthenticated but bound to loopback only")
+		}
+		server := &http.Server{
+			Addr: listenAddr, Handler: apiAuthMiddleware(apiToken, mux),
+			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
+			WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,
+		}
+		log.Printf("mem service starting on %s", listenAddr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// All other commands need database connection
 	initDB()
 	defer pool.Close()
 
-	mux := http.NewServeMux()
-
-	// Health
-	mux.HandleFunc("/health", handleHealth)
-
-	// API aliases (memoh-style: /api/nodes, /api/edges)
-	mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			handleNodesList(w, r)
-		} else {
-			handleNodes(w, r)
+	switch cmd {
+	case "backup":
+		fn := fileFlag
+		if fn == "" {
+			fn = backupFile
 		}
-	})
-	mux.HandleFunc("/api/edges", func(w http.ResponseWriter, r *http.Request) {
-		handleEdges(w, r)
-	})
+		runCLIBackup(fn, useGzip)
+	case "restore":
+		fn := fileFlag
+		if fn == "" {
+			fn = restoreFile
+		}
+		runCLIRestore(fn)
+	default:
+		fmt.Printf("Unknown command: %s\n", cmd)
+		flag.Usage()
+	}
+}
 
-	// v1 API
-	mux.HandleFunc("/v1/memory/nodes", handleNodes)
-	mux.HandleFunc("/v1/memory/nodes/", handleNode)
-	mux.HandleFunc("/v1/memory/edges", handleEdges)
-	mux.HandleFunc("/v1/memory/search", handleSearch)
-	mux.HandleFunc("/v1/memory/stats", handleStats)
-	mux.HandleFunc("/v1/memory/context", handleContext)
-	mux.HandleFunc("/v1/memory/extract", handleExtract)
-	mux.HandleFunc("/v1/memory/rebuild-edges", handleRebuildEdges)
+func runCLIBackup(filename string, useGzip bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	// UI
-	mux.HandleFunc("/graph", handleUI)
-	mux.HandleFunc("/", handleUI)
+	// Fetch all nodes
+	nodes := []Node{}
+	rows, err := pool.Query(ctx, `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at FROM memory_nodes ORDER BY created_at DESC`)
+	if err != nil {
+		log.Fatalf("unable to read nodes for backup: %v", err)
+	}
+	for rows.Next() {
+		var n Node
+		var captured, created, updated interface{}
+		if scanErr := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated); scanErr != nil {
+			rows.Close()
+			continue
+		}
+		n.CapturedAt = fmt.Sprint(captured)
+		n.CreatedAt = fmt.Sprint(created)
+		n.UpdatedAt = fmt.Sprint(updated)
+		nodes = append(nodes, n)
+	}
+	rows.Close()
 
-	listenAddr := strings.TrimSpace(os.Getenv("MEM_LISTEN_ADDR"))
-	if listenAddr == "" {
-		listenAddr = "127.0.0.1:" + port
+	// Fetch all edges
+	edges := []Edge{}
+	rows2, err := pool.Query(ctx, `SELECT id, src, dst, rel, weight, created_at FROM memory_edges ORDER BY created_at DESC`)
+	if err != nil {
+		log.Fatalf("unable to read edges for backup: %v", err)
 	}
-	apiToken := strings.TrimSpace(os.Getenv("MEM_API_TOKEN"))
-	if apiToken == "" && !isLoopbackListenAddress(listenAddr) {
-		log.Fatal("MEM_API_TOKEN is required when listening on a non-loopback address")
+	for rows2.Next() {
+		var e Edge
+		var created interface{}
+		if scanErr := rows2.Scan(&e.ID, &e.Src, &e.Dst, &e.Rel, &e.Weight, &created); scanErr != nil {
+			rows2.Close()
+			continue
+		}
+		e.CreatedAt = fmt.Sprint(created)
+		edges = append(edges, e)
 	}
-	if apiToken == "" {
-		log.Printf("WARNING: MEM_API_TOKEN is unset; API is unauthenticated but bound to loopback only")
+	rows2.Close()
+
+	backup := Backup{
+		Version:   "1.0",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Nodes:     nodes,
+		Edges:     edges,
 	}
-	server := &http.Server{
-		Addr: listenAddr, Handler: apiAuthMiddleware(apiToken, mux),
-		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
-		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
+
+	// Output to file or stdout
+	var writer io.Writer = os.Stdout
+	if filename != "" && filename != "-" {
+		f, err := os.Create(filename)
+		if err != nil {
+			log.Fatalf("cannot create file %s: %v", filename, err)
+		}
+		defer f.Close()
+		writer = f
 	}
-	log.Printf("mem service starting on %s", listenAddr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+
+	if useGzip {
+		gw := gzip.NewWriter(writer)
+		defer gw.Close()
+		if err := json.NewEncoder(gw).Encode(backup); err != nil {
+			log.Fatalf("failed to encode backup: %v", err)
+		}
+	} else {
+		if err := json.NewEncoder(writer).Encode(backup); err != nil {
+			log.Fatalf("failed to encode backup: %v", err)
+		}
 	}
+
+	fmt.Fprintf(os.Stderr, "Backup complete: %d nodes, %d edges\n", len(nodes), len(edges))
+}
+
+func runCLIRestore(filename string) {
+	if filename == "" {
+		log.Fatal("restore requires --file argument")
+	}
+
+	// Open file or use stdin
+	var reader io.Reader = os.Stdin
+	if filename != "-" {
+		var err error
+		f, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open file %s: %v", filename, err)
+		}
+		defer f.Close()
+		reader = f
+
+		// Auto-detect gzip by extension
+		if strings.HasSuffix(filename, ".gz") {
+			gz, err := gzip.NewReader(f)
+			if err != nil {
+				log.Fatalf("invalid gzip file: %v", err)
+			}
+			defer gz.Close()
+			reader = gz
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var backup Backup
+	if err := json.NewDecoder(reader).Decode(&backup); err != nil {
+		log.Fatalf("invalid backup JSON data: %v", err)
+	}
+
+	// Clear existing data
+	if _, err := pool.Exec(ctx, "DELETE FROM memory_nodes"); err != nil {
+		log.Fatalf("failed to clear nodes: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "DELETE FROM memory_edges"); err != nil {
+		log.Fatalf("failed to clear edges: %v", err)
+	}
+
+	// Restore nodes via COPY for speed
+	nodeRows := make([][]any, 0, len(backup.Nodes))
+	for _, n := range backup.Nodes {
+		nodeRows = append(nodeRows, []any{
+			n.ID, n.Body, hashBody(n.Body), n.Layer, n.FactType, n.Subject, n.Confidence, n.Metadata, n.Topic, n.CapturedAt, n.CreatedAt, n.UpdatedAt,
+		})
+	}
+	nodeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, []string{
+		"id", "body", "hash", "layer", "fact_type", "subject", "confidence", "metadata", "topic", "captured_at", "created_at", "updated_at",
+	}, pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
+	if err != nil {
+		log.Fatalf("failed to restore nodes: %v", err)
+	}
+
+	// Restore edges via COPY for speed
+	edgeRows := make([][]any, 0, len(backup.Edges))
+	for _, e := range backup.Edges {
+		edgeRows = append(edgeRows, []any{e.ID, e.Src, e.Dst, e.Rel, e.Weight, e.CreatedAt})
+	}
+	edgeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_edges"}, []string{
+		"id", "src", "dst", "rel", "weight", "created_at",
+	}, pgx.CopyFromSlice(len(edgeRows), func(i int) ([]any, error) { return edgeRows[i], nil }))
+	if err != nil {
+		log.Fatalf("failed to restore edges: %v", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Restore complete: %d nodes, %d edges restored\n", nodeCount, edgeCount)
 }
 
 func handleNodesList(w http.ResponseWriter, r *http.Request) {
