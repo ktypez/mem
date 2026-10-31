@@ -124,19 +124,7 @@ let simulation, zoom, g, node, link;
 let currentTransform = d3.zoomIdentity;
 
 async function api(path){
-  const headers={'Content-Type':'application/json'};
-  let token=sessionStorage.getItem('mem_api_token')||'';
-  if(token) headers.Authorization='Bearer '+token;
-  let response=await fetch(path,{headers});
-  if(response.status===401){
-    const entered=window.prompt('Enter the Memory API bearer token. It is kept only for this browser tab.');
-    if(!entered) throw new Error('API token required');
-    token=entered.trim();
-    sessionStorage.setItem('mem_api_token',token);
-    headers.Authorization='Bearer '+token;
-    response=await fetch(path,{headers});
-    if(response.status===401){ sessionStorage.removeItem('mem_api_token'); throw new Error('Invalid API token'); }
-  }
+  const response = await fetch(path, {headers: {'Content-Type': 'application/json'}});
   if(!response.ok) throw new Error('HTTP '+response.status);
   return response.json();
 }

@@ -36,14 +36,16 @@ func TestAPIAuthMiddleware(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	handler := apiAuthMiddleware("test-secret", next)
+	handler := apiAuthMiddleware("test-secret", "admin", "test-pass", next)
 
+	// API without auth
 	unauthorized := httptest.NewRecorder()
 	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/memory/nodes", nil))
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("missing token: expected 401, got %d", unauthorized.Code)
 	}
 
+	// API with raw token (not Bearer)
 	rawToken := httptest.NewRecorder()
 	rawReq := httptest.NewRequest(http.MethodGet, "/v1/memory/nodes", nil)
 	rawReq.Header.Set("Authorization", "test-secret")
@@ -52,18 +54,48 @@ func TestAPIAuthMiddleware(t *testing.T) {
 		t.Fatalf("token without Bearer scheme: expected 401, got %d", rawToken.Code)
 	}
 
-	authorized := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory/nodes", nil)
-	req.Header.Set("Authorization", "Bearer test-secret")
-	handler.ServeHTTP(authorized, req)
-	if authorized.Code != http.StatusNoContent {
-		t.Fatalf("valid token: expected 204, got %d", authorized.Code)
+	// API with valid Bearer token
+	bearerAuth := httptest.NewRecorder()
+	bearerReq := httptest.NewRequest(http.MethodGet, "/v1/memory/nodes", nil)
+	bearerReq.Header.Set("Authorization", "Bearer test-secret")
+	handler.ServeHTTP(bearerAuth, bearerReq)
+	if bearerAuth.Code != http.StatusNoContent {
+		t.Fatalf("valid bearer token: expected 204, got %d", bearerAuth.Code)
 	}
 
+	// API with valid Basic auth
+	basicAPIAuth := httptest.NewRecorder()
+	basicAPIReq := httptest.NewRequest(http.MethodGet, "/v1/memory/nodes", nil)
+	basicAPIReq.SetBasicAuth("admin", "test-pass")
+	handler.ServeHTTP(basicAPIAuth, basicAPIReq)
+	if basicAPIAuth.Code != http.StatusNoContent {
+		t.Fatalf("valid basic auth for API: expected 204, got %d", basicAPIAuth.Code)
+	}
+
+	// UI without Basic auth
+	uiUnauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(uiUnauthorized, httptest.NewRequest(http.MethodGet, "/", nil))
+	if uiUnauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("UI without auth: expected 401, got %d", uiUnauthorized.Code)
+	}
+	if authHeader := uiUnauthorized.Header().Get("WWW-Authenticate"); authHeader != `Basic realm="mem"` {
+		t.Fatalf("expected Basic realm header, got %q", authHeader)
+	}
+
+	// UI with valid Basic auth
+	uiAuthorized := httptest.NewRecorder()
+	uiReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	uiReq.SetBasicAuth("admin", "test-pass")
+	handler.ServeHTTP(uiAuthorized, uiReq)
+	if uiAuthorized.Code != http.StatusNoContent {
+		t.Fatalf("valid basic auth for UI: expected 204, got %d", uiAuthorized.Code)
+	}
+
+	// Health check without auth
 	health := httptest.NewRecorder()
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if health.Code != http.StatusNoContent {
-		t.Fatalf("health endpoint should not require API token, got %d", health.Code)
+		t.Fatalf("health endpoint should not require auth, got %d", health.Code)
 	}
 }
 

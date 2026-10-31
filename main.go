@@ -741,22 +741,62 @@ func isLoopbackListenAddress(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func apiAuthMiddleware(token string, next http.Handler) http.Handler {
+func apiAuthMiddleware(token, uiUser, uiPass string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		isUI := r.URL.Path == "/" || r.URL.Path == "/graph"
 		isAPI := strings.HasPrefix(r.URL.Path, "/v1/memory/") ||
 			strings.HasPrefix(r.URL.Path, "/api/nodes") || strings.HasPrefix(r.URL.Path, "/api/edges")
-		if isAPI && token != "" {
-			authorization := r.Header.Get("Authorization")
-			provided := ""
-			if strings.HasPrefix(authorization, "Bearer ") {
-				provided = strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
-			}
-			if provided == "" || len(provided) != len(token) || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
-				w.Header().Set("WWW-Authenticate", "Bearer")
-				jsonResp(w, http.StatusUnauthorized, map[string]string{"error": "valid bearer token required"})
+
+		if isUI && uiPass != "" {
+			u, p, ok := r.BasicAuth()
+			uMatch := subtle.ConstantTimeCompare([]byte(u), []byte(uiUser)) == 1
+			pMatch := subtle.ConstantTimeCompare([]byte(p), []byte(uiPass)) == 1
+			if !ok || !uMatch || !pMatch {
+				w.Header().Set("WWW-Authenticate", `Basic realm="mem"`)
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+				w.Header().Set("Referrer-Policy", "no-referrer")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 		}
+
+		if isAPI && (token != "" || uiPass != "") {
+			authHeader := r.Header.Get("Authorization")
+			authorized := false
+
+			// 1. Bearer token check
+			if token != "" && strings.HasPrefix(authHeader, "Bearer ") {
+				provided := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+				if len(provided) == len(token) && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
+					authorized = true
+				}
+			}
+
+			// 2. Basic auth check (e.g. from browser UI)
+			if !authorized && uiPass != "" {
+				u, p, ok := r.BasicAuth()
+				if ok {
+					uMatch := subtle.ConstantTimeCompare([]byte(u), []byte(uiUser)) == 1
+					pMatch := subtle.ConstantTimeCompare([]byte(p), []byte(uiPass)) == 1
+					if uMatch && pMatch {
+						authorized = true
+					}
+				}
+			}
+
+			if !authorized {
+				if strings.HasPrefix(authHeader, "Basic ") {
+					w.Header().Set("WWW-Authenticate", `Basic realm="mem"`)
+				} else {
+					w.Header().Set("WWW-Authenticate", "Bearer")
+				}
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+				w.Header().Set("Referrer-Policy", "no-referrer")
+				jsonResp(w, http.StatusUnauthorized, map[string]string{"error": "valid bearer token or basic auth required"})
+				return
+			}
+		}
+
 		if isAPI && r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		}
@@ -808,6 +848,8 @@ Environment variables:
   DATABASE_URL          PostgreSQL connection string (required)
   MEM_API_TOKEN         API bearer token (required for non-loopback)
   MEM_LISTEN_ADDR       Bind address (default: [IP_ADDRESS]:3200)
+  MEM_UI_USER           Web UI basic auth username (default: admin)
+  MEM_UI_PASSWORD       Web UI basic auth password
 
 Examples:
   mem server                    # Start the HTTP server
@@ -870,8 +912,13 @@ Examples:
 		if apiToken == "" {
 			log.Printf("WARNING: MEM_API_TOKEN is unset; API is unauthenticated but bound to loopback only")
 		}
+		uiUser := strings.TrimSpace(os.Getenv("MEM_UI_USER"))
+		if uiUser == "" {
+			uiUser = "admin"
+		}
+		uiPass := strings.TrimSpace(os.Getenv("MEM_UI_PASSWORD"))
 		server := &http.Server{
-			Addr: listenAddr, Handler: apiAuthMiddleware(apiToken, mux),
+			Addr: listenAddr, Handler: apiAuthMiddleware(apiToken, uiUser, uiPass, mux),
 			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
 			WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,
 		}
