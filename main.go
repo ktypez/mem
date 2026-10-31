@@ -798,7 +798,11 @@ func apiAuthMiddleware(token, uiUser, uiPass string, next http.Handler) http.Han
 		}
 
 		if isAPI && r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
-			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+			limit := int64(1 << 20)
+			if r.URL.Path == "/v1/memory/restore" {
+				limit = 100 << 20
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")

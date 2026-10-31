@@ -21,6 +21,7 @@
     <button class="active" data-page="overview"><span class="ico">▦</span> Overview</button>
     <button data-page="memories"><span class="ico">▤</span> Memories</button>
     <button data-page="search"><span class="ico">⌕</span> Search</button>
+    <button data-page="backup"><span class="ico">⎘</span> Backup</button>
     <button id="graphLink"><span class="ico">⌘</span> Knowledge graph <span style="margin-left:auto;color:#858b98">↗</span></button>
   </nav></div>
   <div class="side-bottom"><div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Connecting to service…</span></div><div id="statusDetail">Checking API health</div></div>
@@ -48,6 +49,43 @@
   <section class="page" id="page-search">
     <section class="panel"><div class="panel-head"><div><h2>Search memories</h2><p>Find matching content across your stored memories</p></div></div><div class="panel-body"><form class="search" id="searchForm"><input class="field" id="searchQuery" required placeholder="Search for a phrase, project, decision…"><button class="btn primary" type="submit">Search</button></form><div class="search-hint">Search uses the service's current text matching endpoint.</div></div><div id="searchResults" class="memory-list"><div class="empty"><strong>Search your memory</strong>Enter a query above to find matching records.</div></div></section>
   </section>
+  <section class="page" id="page-backup">
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head"><div><h2>Export backup</h2><p>Download a complete snapshot of knowledge records</p></div></div>
+        <div class="panel-body" style="display:grid;gap:14px">
+          <p style="margin:0;color:var(--soft);line-height:1.6">Download a copy of all stored memories, metadata, topics, layers, and knowledge graph edges.</p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <a class="btn primary" href="/v1/memory/backup" download="mem-backup.json">
+              <span>↓</span> Download JSON
+            </a>
+            <a class="btn" href="/v1/memory/backup?gzip=true" download="mem-backup.json.gz">
+              <span>↓</span> Download JSON.gz (Compressed)
+            </a>
+          </div>
+          <div class="search-hint">Standard format is JSON. For large databases, compressed gzip is recommended.</div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>Restore backup</h2><p>Import and restore database from a backup file</p></div></div>
+        <div class="panel-body">
+          <form id="restoreForm" style="display:grid;gap:14px">
+            <div style="background:#261818;border:1px solid #632a2a;color:#ffbebe;padding:12px 14px;border-radius:9px;font-size:12px;line-height:1.5">
+              <strong>Warning:</strong> Restoring will wipe existing database records and replace them completely with the data from the selected backup file.
+            </div>
+            <label style="font-size:12px;color:var(--muted);display:grid;gap:6px">
+              Backup file (.json or .json.gz)
+              <input type="file" id="restoreFile" accept=".json,.gz,application/json,application/gzip" required class="field" style="padding:6px">
+            </label>
+            <button class="btn danger" id="restoreBtn" type="submit" style="justify-self:start">
+              <span>↑</span> Restore database
+            </button>
+          </form>
+          <div id="restoreStatus" class="search-hint" style="margin-top:12px"></div>
+        </div>
+      </section>
+    </div>
+  </section>
 </main>
 </div>
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
@@ -66,7 +104,7 @@ function renderLayers(nodes){const counts={};nodes.forEach(n=>{const key=n.layer
 function refreshFilterOptions(nodes){const select=$('filterTopic');const old=select.value;const topics=Array.from(new Set(nodes.map(n=>n.topic).filter(Boolean))).sort();select.innerHTML='<option value="">All topics</option>'+topics.map(t=>'<option value="'+escapeHTML(t)+'">'+escapeHTML(t)+'</option>').join('');if(topics.includes(old))select.value=old;}
 async function refreshAll(){try{const [stats,nodeData]=await Promise.all([api('/v1/memory/stats'),api('/v1/memory/nodes?limit=500')]);allNodes=Array.isArray(nodeData.nodes)?nodeData.nodes:[];$('statNodes').textContent=stats.nodes??allNodes.length;$('statEdges').textContent=stats.edges??'—';$('statTopics').textContent=new Set(allNodes.map(n=>n.topic).filter(Boolean)).size;renderLayers(allNodes);renderMemories('recentList',allNodes.slice(0,5),'No memories yet','Use Quick capture to save your first memory.');refreshFilterOptions(allNodes);applyFilters();$('statusDot').className='dot ok';$('statusText').textContent='Service online';$('statusDetail').textContent='API responding normally';}catch(err){$('statusDot').className='dot bad';$('statusText').textContent='Service unavailable';$('statusDetail').textContent=err.message;notify(err.message,true);}}
 function applyFilters(){const query=$('filterText').value.trim().toLowerCase();const layer=$('filterLayer').value;const topic=$('filterTopic').value;const filtered=allNodes.filter(n=>(!layer||n.layer===layer)&&(!topic||n.topic===topic)&&(!query||String(n.body||'').toLowerCase().includes(query)||String(n.subject||'').toLowerCase().includes(query)||String(n.topic||'').toLowerCase().includes(query)));$('memoryCount').textContent=filtered.length+' shown';renderMemories('memoryList',filtered,'No matching memories','Try changing your filters.');}
-function showPage(name){document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+name));document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===name));$('pageTitle').textContent=({overview:'Overview',memories:'Memories',search:'Search'})[name]||'Overview';$('sidebar').classList.remove('open');if(name==='memories')applyFilters();}
+function showPage(name){document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+name));document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===name));$('pageTitle').textContent=({overview:'Overview',memories:'Memories',search:'Search',backup:'Backup & Restore'})[name]||'Overview';$('sidebar').classList.remove('open');if(name==='memories')applyFilters();}
 async function deleteMemory(id){if(!window.confirm('Delete this memory permanently? This cannot be undone.'))return;try{await api('/v1/memory/nodes/'+encodeURIComponent(id),{method:'DELETE'});notify('Memory deleted');await refreshAll();}catch(err){notify(err.message,true);}}
 document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',()=>showPage(b.dataset.page)));
 document.querySelectorAll('[data-goto]').forEach(b=>b.addEventListener('click',()=>showPage(b.dataset.goto)));
@@ -76,7 +114,8 @@ $('newBtn').addEventListener('click',()=>{showPage('overview');document.querySel
 $('applyFilters').addEventListener('click',applyFilters);$('filterText').addEventListener('input',applyFilters);$('filterLayer').addEventListener('change',applyFilters);$('filterTopic').addEventListener('change',applyFilters);
 document.addEventListener('click',e=>{const btn=e.target.closest('.delete-btn');if(btn)deleteMemory(btn.dataset.id);});
 $('quickForm').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.currentTarget);const body=String(f.get('body')||'').trim();if(!body)return;const button=e.currentTarget.querySelector('button[type="submit"]');button.disabled=true;try{await api('/v1/memory/nodes',{method:'POST',body:JSON.stringify({body:body,layer:f.get('layer'),fact_type:f.get('fact_type'),topic:String(f.get('topic')||'').trim(),subject:String(f.get('subject')||'').trim(),confidence:1})});e.currentTarget.reset();notify('Memory saved');await refreshAll();}catch(err){notify(err.message,true);}finally{button.disabled=false;}});
-$('searchForm').addEventListener('submit',async e=>{e.preventDefault();const q=$('searchQuery').value.trim();if(!q)return;$('searchResults').innerHTML='<div class="empty">Searching…</div>';try{const data=await api('/v1/memory/search',{method:'POST',body:JSON.stringify({query:q})});const results=Array.isArray(data.results)?data.results:[];renderMemories('searchResults',results,'No results found','Try a different query.');}catch(err){$('searchResults').innerHTML='<div class="empty"><strong>Search failed</strong>'+escapeHTML(err.message)+'</div>';}}); 
+$('searchForm').addEventListener('submit',async e=>{e.preventDefault();const q=$('searchQuery').value.trim();if(!q)return;$('searchResults').innerHTML='<div class="empty">Searching…</div>';try{const data=await api('/v1/memory/search',{method:'POST',body:JSON.stringify({query:q})});const results=Array.isArray(data.results)?data.results:[];renderMemories('searchResults',results,'No results found','Try a different query.');}catch(err){$('searchResults').innerHTML='<div class="empty"><strong>Search failed</strong>'+escapeHTML(err.message)+'</div>';}});
+$('restoreForm').addEventListener('submit',async e=>{e.preventDefault();const file=$('restoreFile').files[0];if(!file)return;if(!window.confirm('Restore database from "'+file.name+'"?\n\nWARNING: All existing memories will be wiped and replaced.'))return;const btn=$('restoreBtn');const st=$('restoreStatus');btn.disabled=true;st.textContent='Restoring database from backup file…';st.style.color='var(--accent)';try{const isGzip=file.name.endsWith('.gz');const headers={};if(isGzip){headers['Content-Encoding']='gzip';headers['Content-Type']='application/gzip';}else{headers['Content-Type']='application/json';}const res=await fetch('/v1/memory/restore',{method:'POST',headers:headers,body:file});const data=await res.json();if(!res.ok)throw new Error(data.error||('HTTP '+res.status));st.textContent='Restore complete: '+data.nodes+' nodes and '+data.edges+' edges restored.';st.style.color='var(--green)';notify('Restored '+data.nodes+' memories and '+data.edges+' relationships');$('restoreForm').reset();await refreshAll();}catch(err){st.textContent='Restore failed: '+err.message;st.style.color='var(--red)';notify(err.message,true);}finally{btn.disabled=false;}}); 
 refreshAll();
 })();
 </script>
