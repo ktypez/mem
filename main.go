@@ -14,7 +14,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +41,9 @@ type Node struct {
 	CapturedAt string  `json:"captured_at"`
 	CreatedAt  string  `json:"created_at"`
 	UpdatedAt  string  `json:"updated_at"`
+	Source     string  `json:"source"`
+	Status     string  `json:"status"`
+	FactKey    string  `json:"fact_key,omitempty"`
 }
 
 // Edge represents a relationship between nodes
@@ -105,6 +110,13 @@ func initDB() {
 		CREATE INDEX IF NOT EXISTS idx_nodes_topic ON memory_nodes(topic);
 		CREATE INDEX IF NOT EXISTS idx_edges_src ON memory_edges(src);
 		CREATE INDEX IF NOT EXISTS idx_edges_dst ON memory_edges(dst);
+
+		-- Steward columns (migration-safe for existing databases)
+		ALTER TABLE memory_nodes ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'agent';
+		ALTER TABLE memory_nodes ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+		ALTER TABLE memory_nodes ADD COLUMN IF NOT EXISTS fact_key TEXT;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fact_key ON memory_nodes(fact_key) WHERE fact_key IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_nodes_status ON memory_nodes(status);
 	`)
 	if err != nil {
 		log.Fatalf("Unable to create tables: %v", err)
@@ -146,7 +158,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func handleNodes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		// Support filters: limit, layer, topic, subject
+		// Support filters: limit, layer, topic, subject, status
 		q := r.URL.Query()
 		limit := 100
 		if l := q.Get("limit"); l != "" {
@@ -158,8 +170,9 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 		layer := q.Get("layer")
 		topic := q.Get("topic")
 		subject := q.Get("subject")
+		status := strings.TrimSpace(q.Get("status"))
 
-		query := `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at FROM memory_nodes WHERE 1=1`
+		query := `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at, source, status, COALESCE(fact_key, '') FROM memory_nodes WHERE 1=1`
 		args := []interface{}{}
 		argIdx := 1
 		if layer != "" {
@@ -177,6 +190,20 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 			args = append(args, subject)
 			argIdx++
 		}
+		// Default view is the trusted set: retired and proposed nodes stay out
+		// of normal reads unless explicitly asked for.
+		switch status {
+		case "", statusActive:
+			query += fmt.Sprintf(" AND status = $%d", argIdx)
+			args = append(args, statusActive)
+			argIdx++
+		case "all":
+			// no status filter
+		default:
+			query += fmt.Sprintf(" AND status = $%d", argIdx)
+			args = append(args, status)
+			argIdx++
+		}
 		query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", argIdx)
 		args = append(args, limit)
 
@@ -190,7 +217,7 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var n Node
 			var captured, created, updated interface{}
-			if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated); err != nil {
+			if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated, &n.Source, &n.Status, &n.FactKey); err != nil {
 				continue
 			}
 			n.CapturedAt = fmt.Sprint(captured)
@@ -233,12 +260,17 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 			metadata = string(b)
 		}
 
+		// Steward model: only the steward writes trusted nodes directly.
+		// Anyone else lands in the inbox as "proposed".
+		identity := writerIdentity(r, data)
+		status := statusForWriter(identity)
+
 		id := uuid.New().String()
 		nowStr := now()
 		_, err := pool.Exec(context.Background(),
-			`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, subject, confidence, metadata, topic, captured_at, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-			id, body, hashBody(body), layer, factType, subject, confidence, metadata, topic, nowStr, nowStr, nowStr)
+			`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, subject, confidence, metadata, topic, captured_at, created_at, updated_at, source, status)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+			id, body, hashBody(body), layer, factType, subject, confidence, metadata, topic, nowStr, nowStr, nowStr, identity, status)
 		if err != nil {
 			jsonResp(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -248,8 +280,13 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 			ID: id, Body: body, Layer: layer, Topic: topic, Subject: subject,
 			Confidence: confidence, FactType: factType, Metadata: metadata,
 			CapturedAt: nowStr, CreatedAt: nowStr, UpdatedAt: nowStr,
+			Source: identity, Status: status,
 		}
-		jsonResp(w, 201, node)
+		code := http.StatusCreated
+		if status == statusProposed {
+			code = http.StatusAccepted
+		}
+		jsonResp(w, code, node)
 
 	case "DELETE":
 		if !bulkDeleteAllowed(r) {
@@ -271,6 +308,17 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 func handleNode(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/memory/nodes/")
 	id = strings.TrimPrefix(id, "/api/nodes/")
+
+	// Steward decisions ride on the node path: /nodes/<id>/promote|reject
+	switch {
+	case strings.HasSuffix(id, "/promote"):
+		handleNodeDecision(w, r, "promote")
+		return
+	case strings.HasSuffix(id, "/reject"):
+		handleNodeDecision(w, r, "reject")
+		return
+	}
+
 	if id == "" {
 		jsonResp(w, 400, map[string]string{"error": "missing id"})
 		return
@@ -281,9 +329,9 @@ func handleNode(w http.ResponseWriter, r *http.Request) {
 		var n Node
 		var captured, created, updated interface{}
 		err := pool.QueryRow(context.Background(),
-			`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at
+			`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at, source, status, COALESCE(fact_key, '')
 			 FROM memory_nodes WHERE id = $1`, id).
-			Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated)
+			Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated, &n.Source, &n.Status, &n.FactKey)
 		if err != nil {
 			jsonResp(w, 404, map[string]string{"error": "not found"})
 			return
@@ -294,6 +342,11 @@ func handleNode(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, 200, n)
 
 	case "DELETE":
+		var src string
+		if err := pool.QueryRow(context.Background(), `SELECT source FROM memory_nodes WHERE id = $1`, id).Scan(&src); err == nil && src == sourceSystem {
+			jsonResp(w, http.StatusForbidden, map[string]string{"error": "system facts are owned by the live-system refresher; they are retired, not deleted"})
+			return
+		}
 		_, err := pool.Exec(context.Background(), "DELETE FROM memory_nodes WHERE id = $1", id)
 		if err != nil {
 			jsonResp(w, 500, map[string]string{"error": err.Error()})
@@ -396,9 +449,9 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := 10
 	rows, err := pool.Query(context.Background(),
-		`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, created_at, updated_at
-		 FROM memory_nodes WHERE body ILIKE $1 ORDER BY created_at DESC LIMIT $2`,
-		"%"+q+"%", limit)
+		`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, created_at, updated_at, source, status, COALESCE(fact_key, '')
+		 FROM memory_nodes WHERE body ILIKE $1 AND status = $3 ORDER BY created_at DESC LIMIT $2`,
+		"%"+q+"%", limit, statusActive)
 	if err != nil {
 		jsonResp(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -408,7 +461,7 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var n Node
 		var created, updated interface{}
-		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &created, &updated); err != nil {
+		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &created, &updated, &n.Source, &n.Status, &n.FactKey); err != nil {
 			continue
 		}
 		n.CreatedAt = fmt.Sprint(created)
@@ -455,7 +508,24 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to finish reading layer counts"})
 		return
 	}
-	jsonResp(w, http.StatusOK, map[string]interface{}{"nodes": nodes, "edges": edges, "layers": layers})
+
+	// Steward visibility: how much is waiting in the inbox.
+	statusCounts := map[string]int{}
+	statusRows, err := pool.Query(ctx, "SELECT status, COUNT(*) FROM memory_nodes GROUP BY status")
+	if err == nil {
+		for statusRows.Next() {
+			var status string
+			var count int
+			if statusRows.Scan(&status, &count) == nil {
+				statusCounts[status] = count
+			}
+		}
+		statusRows.Close()
+	}
+
+	jsonResp(w, http.StatusOK, map[string]interface{}{
+		"nodes": nodes, "edges": edges, "layers": layers, "status": statusCounts,
+	})
 }
 
 func handleContext(w http.ResponseWriter, r *http.Request) {
@@ -480,8 +550,8 @@ func handleContext(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rows, err := pool.Query(context.Background(),
-		`SELECT body FROM memory_nodes WHERE body ILIKE $1 ORDER BY created_at DESC LIMIT $2`,
-		"%"+query+"%", limit)
+		`SELECT body FROM memory_nodes WHERE body ILIKE $1 AND status = $3 ORDER BY created_at DESC LIMIT $2`,
+		"%"+query+"%", limit, statusActive)
 	if err != nil {
 		jsonResp(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -518,16 +588,33 @@ func handleExtract(w http.ResponseWriter, r *http.Request) {
 	if l, ok := data["layer"].(string); ok && l != "" {
 		layer = l
 	}
+	topic := ""
+	if t, ok := data["topic"].(string); ok {
+		topic = t
+	}
+	subject := ""
+	if s, ok := data["subject"].(string); ok {
+		subject = s
+	}
+	// Extraction is still a write, so it goes through the same identity gate as
+	// every other write path: only the steward's extracted nodes are trusted.
+	identity := writerIdentity(r, data)
+	status := statusForWriter(identity)
 	nowStr := now()
 	_, err := pool.Exec(context.Background(),
-		`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, confidence, metadata, captured_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, 'fact', 1.0, '{}', $5, $5, $5)`,
-		id, text, hashBody(text), layer, nowStr)
+		`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, subject, confidence, metadata, topic, captured_at, created_at, updated_at, source, status)
+		 VALUES ($1, $2, $3, $4, 'fact', $5, 1.0, '{}', $6, $7, $7, $7, $8, $9)`,
+		id, text, hashBody(text), layer, subject, topic, nowStr, identity, status)
 	if err != nil {
 		jsonResp(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	jsonResp(w, 201, map[string]interface{}{"extracted": 1, "nodes": []map[string]string{{"id": id, "body": text}}})
+	jsonResp(w, 201, map[string]interface{}{
+		"extracted": 1,
+		"status":    status,
+		"source":    identity,
+		"nodes":     []map[string]string{{"id": id, "body": text}},
+	})
 }
 
 func handleRebuildEdges(w http.ResponseWriter, r *http.Request) {
@@ -680,15 +767,9 @@ func handleRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Restore nodes via COPY for speed
-	nodeRows := make([][]any, 0, len(backup.Nodes))
-	for _, n := range backup.Nodes {
-		nodeRows = append(nodeRows, []any{
-			n.ID, n.Body, hashBody(n.Body), n.Layer, n.FactType, n.Subject, n.Confidence, n.Metadata, n.Topic, n.CapturedAt, n.CreatedAt, n.UpdatedAt,
-		})
-	}
-	nodeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, []string{
-		"id", "body", "hash", "layer", "fact_type", "subject", "confidence", "metadata", "topic", "captured_at", "created_at", "updated_at",
-	}, pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
+	nodeRows := nodeRowsFromBackup(backup.Nodes)
+	nodeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, restoredNodeColumns,
+		pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
 	if err != nil {
 		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to restore nodes: " + err.Error()})
 		return
@@ -713,6 +794,40 @@ func handleRestore(w http.ResponseWriter, r *http.Request) {
 		"edges":     edgeCount,
 		"timestamp": backup.Timestamp,
 	})
+}
+
+// restoredNodeColumns is the COPY column order that nodeRowsFromBackup builds.
+var restoredNodeColumns = []string{
+	"id", "body", "hash", "layer", "fact_type", "subject", "confidence",
+	"metadata", "topic", "captured_at", "created_at", "updated_at",
+	"source", "status", "fact_key",
+}
+
+// nodeRowsFromBackup flattens backup nodes for COPY. Backups written before the
+// steward columns existed have no source/status: default them so a restore never
+// resurrects rows into an unknown state.
+func nodeRowsFromBackup(nodes []Node) [][]any {
+	rows := make([][]any, 0, len(nodes))
+	for _, n := range nodes {
+		source := n.Source
+		if source == "" {
+			source = "agent"
+		}
+		status := n.Status
+		if status == "" {
+			status = statusActive
+		}
+		var factKey any
+		if n.FactKey != "" {
+			factKey = n.FactKey
+		}
+		rows = append(rows, []any{
+			n.ID, n.Body, hashBody(n.Body), n.Layer, n.FactType, n.Subject, n.Confidence,
+			n.Metadata, n.Topic, n.CapturedAt, n.CreatedAt, n.UpdatedAt,
+			source, status, factKey,
+		})
+	}
+	return rows
 }
 
 func handleUI(w http.ResponseWriter, r *http.Request) {
@@ -745,7 +860,7 @@ func apiAuthMiddleware(token, uiUser, uiPass string, next http.Handler) http.Han
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		isUI := r.URL.Path == "/" || r.URL.Path == "/graph"
 		isAPI := strings.HasPrefix(r.URL.Path, "/v1/memory/") ||
-			strings.HasPrefix(r.URL.Path, "/api/nodes") || strings.HasPrefix(r.URL.Path, "/api/edges")
+			strings.HasPrefix(r.URL.Path, "/api/")
 
 		if isUI && uiPass != "" {
 			u, p, ok := r.BasicAuth()
@@ -900,6 +1015,11 @@ Examples:
 		mux.HandleFunc("/v1/memory/rebuild-edges", handleRebuildEdges)
 		mux.HandleFunc("/v1/memory/backup", handleBackup)
 		mux.HandleFunc("/v1/memory/restore", handleRestore)
+		mux.HandleFunc("/v1/memory/brief", handleBrief)
+		mux.HandleFunc("/v1/memory/inbox", handleInbox)
+		mux.HandleFunc("/api/brief", handleBrief)
+		mux.HandleFunc("/api/inbox", handleInbox)
+		mux.HandleFunc("/api/nodes/", handleNode)
 
 		// UI
 		mux.HandleFunc("/graph", handleUI)
@@ -926,10 +1046,29 @@ Examples:
 			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
 			WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,
 		}
+
+		// Live-system facts are re-read and swept in the background.
+		stopRefresher := make(chan struct{})
+		go startFactRefresher(stopRefresher)
+
+		// Shut down cleanly so the refresher stops instead of writing mid-exit.
+		ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
+		go func() {
+			<-ctx.Done()
+			close(stopRefresher)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				log.Printf("shutdown: %v", err)
+			}
+		}()
+
 		log.Printf("mem service starting on %s", listenAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
+		log.Printf("mem service stopped")
 		return
 	}
 
@@ -962,14 +1101,14 @@ func runCLIBackup(filename string, useGzip bool) {
 
 	// Fetch all nodes
 	nodes := []Node{}
-	rows, err := pool.Query(ctx, `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at FROM memory_nodes ORDER BY created_at DESC`)
+	rows, err := pool.Query(ctx, `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at, source, status, COALESCE(fact_key, '') FROM memory_nodes ORDER BY created_at DESC`)
 	if err != nil {
 		log.Fatalf("unable to read nodes for backup: %v", err)
 	}
 	for rows.Next() {
 		var n Node
 		var captured, created, updated interface{}
-		if scanErr := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated); scanErr != nil {
+		if scanErr := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated, &n.Source, &n.Status, &n.FactKey); scanErr != nil {
 			rows.Close()
 			continue
 		}
@@ -1075,15 +1214,9 @@ func runCLIRestore(filename string) {
 	}
 
 	// Restore nodes via COPY for speed
-	nodeRows := make([][]any, 0, len(backup.Nodes))
-	for _, n := range backup.Nodes {
-		nodeRows = append(nodeRows, []any{
-			n.ID, n.Body, hashBody(n.Body), n.Layer, n.FactType, n.Subject, n.Confidence, n.Metadata, n.Topic, n.CapturedAt, n.CreatedAt, n.UpdatedAt,
-		})
-	}
-	nodeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, []string{
-		"id", "body", "hash", "layer", "fact_type", "subject", "confidence", "metadata", "topic", "captured_at", "created_at", "updated_at",
-	}, pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
+	nodeRows := nodeRowsFromBackup(backup.Nodes)
+	nodeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, restoredNodeColumns,
+		pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
 	if err != nil {
 		log.Fatalf("failed to restore nodes: %v", err)
 	}
@@ -1104,9 +1237,21 @@ func runCLIRestore(filename string) {
 }
 
 func handleNodesList(w http.ResponseWriter, r *http.Request) {
-	rows, err := pool.Query(context.Background(),
-		`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at
-		 FROM memory_nodes ORDER BY created_at DESC`)
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	query := `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at, source, status, COALESCE(fact_key, '') FROM memory_nodes`
+	args := []interface{}{}
+	switch status {
+	case "", statusActive:
+		query += " WHERE status = $1"
+		args = append(args, statusActive)
+	case "all":
+	default:
+		query += " WHERE status = $1"
+		args = append(args, status)
+	}
+	query += " ORDER BY created_at DESC"
+
+	rows, err := pool.Query(context.Background(), query, args...)
 	if err != nil {
 		jsonResp(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -1119,6 +1264,9 @@ func handleNodesList(w http.ResponseWriter, r *http.Request) {
 		Topic      string  `json:"topic"`
 		Subject    string  `json:"subject"`
 		Confidence float64 `json:"confidence"`
+		Source     string  `json:"source"`
+		Status     string  `json:"status"`
+		FactKey    string  `json:"fact_key,omitempty"`
 		CreatedAt  string  `json:"created_at"`
 		UpdatedAt  string  `json:"updated_at"`
 	}
@@ -1127,7 +1275,7 @@ func handleNodesList(w http.ResponseWriter, r *http.Request) {
 		var n nodeResp
 		var captured, created, updated interface{}
 		var factType, metadata string
-		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &factType, &metadata, &captured, &created, &updated); err != nil {
+		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &factType, &metadata, &captured, &created, &updated, &n.Source, &n.Status, &n.FactKey); err != nil {
 			log.Printf("scan error: %v", err)
 			continue
 		}
