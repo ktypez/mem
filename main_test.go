@@ -33,6 +33,24 @@ func TestLoopbackListenAddress(t *testing.T) {
 	}
 }
 
+func TestSocketTriggeredServiceSkipsOnDemandUnits(t *testing.T) {
+	sockets := map[string]bool{"mem-lan": true, "dbus": true}
+	for _, unit := range []string{"mem-lan.service", "mem-lan@1.service", "dbus.service", "dbus@0.service"} {
+		if !socketTriggeredService(sockets, unit) {
+			t.Errorf("%q has a live socket and must not be reported as unhealthy", unit)
+		}
+	}
+	for _, unit := range []string{"memory.service", "mem-lan.socket", "mem-lans.service", "sshd.service"} {
+		if socketTriggeredService(sockets, unit) {
+			t.Errorf("%q must still be reported", unit)
+		}
+	}
+	// No sockets known (systemctl unavailable) must not silence real failures.
+	if socketTriggeredService(nil, "memory.service") {
+		t.Error("an empty socket set must report every unit")
+	}
+}
+
 func TestAPIAuthMiddleware(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

@@ -190,6 +190,9 @@ func collectSystemFacts() []SystemFact {
 	}
 
 	// systemd units that are not in a healthy resting state.
+	// Socket-activated services sit inactive between connections by design, so
+	// they are not failures — skip the ones a live socket can start.
+	sockets := socketActivatedUnits()
 	if out, err := runCmd("systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend"); err == nil {
 		for _, line := range strings.Split(out, "\n") {
 			f := strings.Fields(line)
@@ -198,6 +201,9 @@ func collectSystemFacts() []SystemFact {
 			}
 			unit, load, active, sub := f[0], f[1], f[2], f[3]
 			if load != "loaded" || (active == "active" && sub == "running") {
+				continue
+			}
+			if socketTriggeredService(sockets, unit) {
 				continue
 			}
 			facts = append(facts, SystemFact{
@@ -226,6 +232,38 @@ func collectSystemFacts() []SystemFact {
 	}
 
 	return facts
+}
+
+// socketActivatedUnits returns the base names of service units that a live
+// systemd socket can start on demand. A socket-activated unit is expected to be
+// inactive while nobody is connecting, so reporting it as unhealthy is noise.
+func socketActivatedUnits() map[string]bool {
+	out, err := runCmd("systemctl", "list-units", "--type=socket", "--state=active", "--no-pager", "--no-legend")
+	if err != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || !strings.HasSuffix(f[0], ".socket") {
+			continue
+		}
+		set[strings.TrimSuffix(f[0], ".socket")] = true
+	}
+	return set
+}
+
+// socketTriggeredService reports whether unit is one of those socket-activated
+// services. Templated instances (foo@1.service) are matched on their base name.
+func socketTriggeredService(sockets map[string]bool, unit string) bool {
+	if len(sockets) == 0 {
+		return false
+	}
+	name := strings.TrimSuffix(unit, ".service")
+	if i := strings.Index(name, "@"); i >= 0 {
+		name = name[:i]
+	}
+	return sockets[name]
 }
 
 func runCmd(name string, args ...string) (string, error) {
