@@ -33,15 +33,45 @@ const (
 	statusProposed = "proposed"
 	statusRetired  = "retired"
 	sourceSystem   = "system"
+
+	// defaultStewardSource is the identity trusted to write active nodes when
+	// MEM_STEWARD_SOURCE is unset.
+	defaultStewardSource = "steward"
 )
 
-// stewardSource returns the identity allowed to write active nodes directly.
-func stewardSource() string {
-	s := strings.TrimSpace(os.Getenv("MEM_STEWARD_SOURCE"))
-	if s == "" {
-		return "steward"
+// stewardSources returns the identities allowed to write active nodes directly.
+// MEM_STEWARD_SOURCE accepts a comma-separated list so the agent itself can be
+// trusted alongside a separate curator identity.
+func stewardSources() []string {
+	raw := strings.TrimSpace(os.Getenv("MEM_STEWARD_SOURCE"))
+	if raw == "" {
+		raw = defaultStewardSource
 	}
-	return s
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return []string{defaultStewardSource}
+	}
+	return out
+}
+
+// stewardSource is the display form of the trusted identities.
+func stewardSource() string {
+	return strings.Join(stewardSources(), ",")
+}
+
+// isStewardIdentity reports whether this writer may bypass the inbox.
+func isStewardIdentity(identity string) bool {
+	for _, s := range stewardSources() {
+		if identity == s {
+			return true
+		}
+	}
+	return false
 }
 
 // factRefreshInterval returns how often the live system is re-read.
@@ -389,7 +419,7 @@ func writerIdentity(r *http.Request, data map[string]interface{}) string {
 // statusForWriter gates writes by identity: the steward writes active nodes
 // directly, everyone else lands in the inbox as proposed.
 func statusForWriter(identity string) string {
-	if identity == stewardSource() {
+	if isStewardIdentity(identity) {
 		return statusActive
 	}
 	return statusProposed

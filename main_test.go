@@ -178,6 +178,32 @@ func TestStatusForWriterGatesByStewardIdentity(t *testing.T) {
 	}
 }
 
+func TestStewardSourceAcceptsTrustedList(t *testing.T) {
+	t.Setenv("MEM_STEWARD_SOURCE", " steward , hermes ")
+	if got := stewardSource(); got != "steward,hermes" {
+		t.Fatalf("display form should be normalized: got %q", got)
+	}
+	for _, identity := range []string{"steward", "hermes"} {
+		if got := statusForWriter(identity); got != statusActive {
+			t.Fatalf("listed writer %q must write active, got %q", identity, got)
+		}
+	}
+	for _, identity := range []string{"hermes2", "agent", "default", "steward ", ""} {
+		if got := statusForWriter(identity); got != statusProposed {
+			t.Fatalf("writer %q is not listed and must be proposed, got %q", identity, got)
+		}
+	}
+
+	// A value of only separators must not open the gate or panic.
+	t.Setenv("MEM_STEWARD_SOURCE", " , ")
+	if got := stewardSource(); got != defaultStewardSource {
+		t.Fatalf("empty list should fall back to the default steward, got %q", got)
+	}
+	if got := statusForWriter("agent"); got != statusProposed {
+		t.Fatalf("empty list must not trust agent, got %q", got)
+	}
+}
+
 func TestStewardSourceDefaultAndOverride(t *testing.T) {
 	t.Setenv("MEM_STEWARD_SOURCE", "")
 	if got := stewardSource(); got != "steward" {
