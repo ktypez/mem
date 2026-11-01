@@ -1,0 +1,14 @@
+[Unit]
+Description=mem — LAN entry point for the loopback-bound memory service
+Documentation=https://github.com/ktypez/mem
+After=network-online.target
+Wants=network-online.target
+
+[Socket]
+# Only the Wi-Fi LAN address, so the tailnet and the usb0 gadget network stay out.
+ListenStream=192.168.1.47:3200
+Accept=no
+Service=mem-lan.service
+
+[Install]
+WantedBy=sockets.target
