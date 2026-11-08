@@ -5,9 +5,11 @@ Base URL used in the examples: `http://127.0.0.1:3200`.
 ## Authentication
 
 - `/health` is unauthenticated.
-- API routes accept `Authorization: Bearer $MEM_API_TOKEN` when an API token is configured.
-- If `MEM_UI_PASSWORD` is set, API routes also accept the configured UI Basic Auth credentials; this supports the browser UI.
-- `/` and `/graph` use HTTP Basic Auth when `MEM_UI_PASSWORD` is set.
+- API routes accept `Authorization: Bearer $MEM_API_TOKEN` (agent role) or `Authorization: Bearer $MEM_STEWARD_TOKEN` (steward role) when those tokens are configured.
+- If `MEM_UI_PASSWORD` is set, API routes also accept the configured UI Basic Auth credentials, which carry the steward role; this supports the browser UI.
+- Every page other than `/health` (the web UI) uses HTTP Basic Auth when `MEM_UI_PASSWORD` is set.
+- Browser writes carrying an `Origin` header must come from the service's own host or from `MEM_ALLOWED_ORIGINS`; otherwise they get `403`. Clients that send no `Origin` header (curl, agents) are unaffected.
+- Steward-only routes (marked below) return `403` for the agent role.
 - Keep tokens/passwords out of shell history, logs, screenshots, and source control. Use HTTPS across untrusted networks.
 
 Shell snippets below assume `MEM_API_TOKEN` is already provided through a secure environment mechanism.
@@ -42,7 +44,9 @@ curl -sS -X POST http://127.0.0.1:3200/v1/memory/nodes \
   -d '{"body":"Example durable fact","layer":"semantic","topic":"example","subject":"service"}'
 ```
 
-The server assigns `source` and `status` according to writer identity. `X-Mem-Source` takes precedence over JSON `source`; unidentified writes default to `agent`. Trusted identities configured with `MEM_STEWARD_SOURCE` become `active`, while other writers are `proposed`. Do not let an untrusted caller choose a steward identity: API tokens currently authenticate the API client, not individual writer identities.
+`body` is required and must be a non-empty string; `metadata` is stored as a JSON object (a non-object value is wrapped as `{"value": ...}`); `limit` below 1 falls back to 100.
+
+The server assigns `source` and `status` according to writer identity. `X-Mem-Source` takes precedence over JSON `source`; unidentified writes default to `agent`. When `MEM_STEWARD_TOKEN` is configured, only steward credentials produce `active` nodes; an agent claiming a steward label is stored as `unverified:<label>` with status `proposed`. Without `MEM_STEWARD_TOKEN` (legacy mode) identities in `MEM_STEWARD_SOURCE` become `active` on their own say-so, so any API client can claim one.
 
 Single-node deletion is available through `DELETE /v1/memory/nodes/{id}`. System-owned facts (`source=system`) are managed by the refresher and cannot be deleted through this route.
 
@@ -51,7 +55,7 @@ Single-node deletion is available through `DELETE /v1/memory/nodes/{id}`. System
 ```http
 GET  /v1/memory/edges
 POST /v1/memory/edges
-POST /v1/memory/rebuild-edges
+POST /v1/memory/rebuild-edges   (steward only)
 ```
 
 Create edge JSON can be one edge or an object containing an `edges` array:
@@ -64,7 +68,7 @@ Rebuild example:
 
 ```sh
 curl -fsS -X POST http://127.0.0.1:3200/v1/memory/rebuild-edges \
-  -H "Authorization: Bearer $MEM_API_TOKEN" \
+  -H "Authorization: Bearer $MEM_STEWARD_TOKEN" \
   -H 'Content-Type: application/json' -d '{}'
 ```
 
@@ -87,8 +91,8 @@ Search returns up to 10 matching active nodes. Context accepts query parameters 
 POST /v1/memory/extract
 GET  /v1/memory/brief
 GET  /v1/memory/inbox
-POST /v1/memory/nodes/{id}/promote
-POST /v1/memory/nodes/{id}/reject
+POST /v1/memory/nodes/{id}/promote   (steward only)
+POST /v1/memory/nodes/{id}/reject    (steward only)
 ```
 
 `/v1/memory/extract` accepts JSON containing `text` and optional `layer`, `topic`, `subject`, and `source`. It creates one node and applies the same writer identity gate as other writes. `/brief` returns active system facts. `/inbox` lists proposed nodes (up to 500). Promote marks an eligible proposed node active; reject retires it. System-owned facts cannot be promoted/rejected.
@@ -97,10 +101,12 @@ POST /v1/memory/nodes/{id}/reject
 
 ```http
 GET  /v1/memory/backup
-POST /v1/memory/restore
+POST /v1/memory/restore   (steward only)
 ```
 
-`GET /v1/memory/backup?gzip=true` returns a gzip-compressed backup. Restore accepts a backup payload and is destructive to matching records; validate backups against a separate database first. The request body limit for the restore endpoint is larger than for normal writes.
+`GET /v1/memory/backup?gzip=true` returns a gzip-compressed backup. The export is one consistent snapshot of every node (including `source`, `status` and `fact_key`) and edge, and it fails with `503` rather than returning a truncated file.
+
+Restore replaces all data in a single transaction: it either restores the whole backup or changes nothing. It requires steward credentials and the header `X-Confirm-Restore: replace-all`. It rejects an empty backup, duplicate node ids, unknown statuses and edges that point at missing nodes, and it limits the decompressed payload size. Send gzip data with `Content-Encoding: gzip` or `Content-Type: application/gzip`. Validate backups against a separate database first.
 
 ## Compatibility routes
 
