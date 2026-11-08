@@ -7,8 +7,9 @@ installed version's MCP docs/CLI; configuration syntax can change.
 
 No third-party deps: the MCP JSON-RPC over stdin/stdout is hand-rolled. Writes land as
 `proposed` (X-Mem-Source below) unless this identity is explicitly trusted by the service.
-Configure the service URL, source identity, and token through environment variables or an
-approved secret manager; do not hard-code credentials.
+Configure the service URL and agent token through environment variables or an approved secret
+manager. Privileged promote/reject calls separately require MEM_STEWARD_TOKEN (or
+HERMES_MEMORY_STEWARD_TOKEN); never give that token to an untrusted agent or hard-code credentials.
 """
 import json
 import os
@@ -20,20 +21,22 @@ BASE = os.environ.get("MEM_SERVICE_URL", "http://127.0.0.1:3200")
 SOURCE = os.environ.get("MEM_SOURCE", "agent")   # set to the calling harness identity
 
 
-def service_token() -> str:
-    """Bearer token for mem. Resolve only from explicit process environment."""
-    for key in ("MEM_API_TOKEN", "HERMES_MEMORY_SERVICE_TOKEN"):
+def service_token(steward: bool = False) -> str:
+    """Bearer token for mem; steward credentials are opt-in per privileged call."""
+    keys = (("MEM_STEWARD_TOKEN", "HERMES_MEMORY_STEWARD_TOKEN") if steward
+            else ("MEM_API_TOKEN", "HERMES_MEMORY_SERVICE_TOKEN"))
+    for key in keys:
         value = os.environ.get(key, "").strip()
         if value:
             return value
-    raise RuntimeError("Set MEM_API_TOKEN in the MCP process environment or secret manager")
+    role = "MEM_STEWARD_TOKEN" if steward else "MEM_API_TOKEN"
+    raise RuntimeError(f"Set {role} in the MCP process environment or secret manager")
 
 
-def call(method: str, path: str, body: dict | None = None) -> dict:
+def call(method: str, path: str, body: dict | None = None, *, steward: bool = False) -> dict:
     headers = {"X-Mem-Source": SOURCE}
-    token = service_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    token = service_token(steward=steward)
+    headers["Authorization"] = f"Bearer {token}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
     try:
@@ -121,9 +124,9 @@ def run_tool(name: str, args: dict) -> dict:
     if name == "memory_inbox":
         return call("GET", "/v1/memory/inbox?limit=%d" % int(args.get("limit", 50)))
     if name == "memory_promote":
-        return call("POST", "/v1/memory/nodes/%s/promote" % args["id"])
+        return call("POST", "/v1/memory/nodes/%s/promote" % args["id"], steward=True)
     if name == "memory_reject":
-        return call("POST", "/v1/memory/nodes/%s/reject" % args["id"])
+        return call("POST", "/v1/memory/nodes/%s/reject" % args["id"], steward=True)
     return {"error": "unknown tool: %s" % name}
 
 
