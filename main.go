@@ -1,10 +1,8 @@
 package main
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -20,13 +18,29 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var pool *pgxpool.Pool
 
 const port = "3200"
+
+// defaultListenAddr is where the server binds when MEM_LISTEN_ADDR is unset:
+// loopback only.
+func defaultListenAddr() string {
+	return "127.0.0.1:" + port
+}
+
+// splitList splits a comma-separated environment value, dropping blanks.
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // Node represents a memory node (no bot_id)
 type Node struct {
@@ -164,6 +178,9 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 		if l := q.Get("limit"); l != "" {
 			fmt.Sscanf(l, "%d", &limit)
 		}
+		if limit < 1 {
+			limit = 100
+		}
 		if limit > 5000 {
 			limit = 5000
 		}
@@ -233,7 +250,11 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 			jsonResp(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		body := fmt.Sprint(data["body"])
+		body, _ := data["body"].(string)
+		if strings.TrimSpace(body) == "" {
+			jsonResp(w, http.StatusBadRequest, map[string]string{"error": "body is required and must be a non-empty string"})
+			return
+		}
 		layer := "semantic"
 		if v, ok := data["layer"].(string); ok && v != "" {
 			layer = v
@@ -254,16 +275,12 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 		if v, ok := data["fact_type"].(string); ok && v != "" {
 			factType = v
 		}
-		metadata := "{}"
-		if v, ok := data["metadata"]; ok {
-			b, _ := json.Marshal(v)
-			metadata = string(b)
-		}
+		// Always a JSON object: the steward SQL assumes one.
+		metadata := metadataObject(data["metadata"])
 
 		// Steward model: only the steward writes trusted nodes directly.
 		// Anyone else lands in the inbox as "proposed".
-		identity := writerIdentity(r, data)
-		status := statusForWriter(identity)
+		identity, status := resolveWriter(r, data)
 
 		id := uuid.New().String()
 		nowStr := now()
@@ -578,8 +595,8 @@ func handleExtract(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
 		return
 	}
-	text := fmt.Sprint(data["text"])
-	if text == "" || text == "<nil>" {
+	text, _ := data["text"].(string)
+	if strings.TrimSpace(text) == "" {
 		jsonResp(w, 400, map[string]string{"error": "text required"})
 		return
 	}
@@ -598,8 +615,7 @@ func handleExtract(w http.ResponseWriter, r *http.Request) {
 	}
 	// Extraction is still a write, so it goes through the same identity gate as
 	// every other write path: only the steward's extracted nodes are trusted.
-	identity := writerIdentity(r, data)
-	status := statusForWriter(identity)
+	identity, status := resolveWriter(r, data)
 	nowStr := now()
 	_, err := pool.Exec(context.Background(),
 		`INSERT INTO memory_nodes (id, body, hash, layer, fact_type, subject, confidence, metadata, topic, captured_at, created_at, updated_at, source, status)
@@ -621,6 +637,9 @@ func handleRebuildEdges(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !requireSteward(w, r) {
 		return
 	}
 	_, _ = pool.Exec(context.Background(), "DELETE FROM memory_edges WHERE rel IN ('same_topic', 'same_subject')")
@@ -651,193 +670,53 @@ func handleRebuildEdges(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, 200, map[string]interface{}{"status": "ok", "edges_created": count})
 }
 
-func handleBackup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
+// loadServerConfig reads the listen address and credentials from the environment
+// and refuses to start in a configuration that would expose the API by accident.
+func loadServerConfig() (string, authConfig) {
+	listenAddr := strings.TrimSpace(os.Getenv("MEM_LISTEN_ADDR"))
+	if listenAddr == "" {
+		listenAddr = defaultListenAddr()
 	}
-
-	// Check for gzip parameter
-	useGzip := r.URL.Query().Get("gzip") == "true"
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	// Fetch all nodes
-	nodes := []Node{}
-	rows, err := pool.Query(ctx, `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at FROM memory_nodes ORDER BY created_at DESC`)
-	if err != nil {
-		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read nodes for backup"})
-		return
+	cfg := authConfig{
+		APIToken:       strings.TrimSpace(os.Getenv("MEM_API_TOKEN")),
+		StewardToken:   strings.TrimSpace(os.Getenv("MEM_STEWARD_TOKEN")),
+		UIUser:         strings.TrimSpace(os.Getenv("MEM_UI_USER")),
+		UIPass:         strings.TrimSpace(os.Getenv("MEM_UI_PASSWORD")),
+		AllowedOrigins: splitList(os.Getenv("MEM_ALLOWED_ORIGINS")),
 	}
-	for rows.Next() {
-		var n Node
-		var captured, created, updated interface{}
-		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated); err != nil {
-			rows.Close()
-			continue
+	if cfg.UIUser == "" {
+		cfg.UIUser = "admin"
+	}
+	if cfg.StewardToken != "" && cfg.StewardToken == cfg.APIToken {
+		log.Fatal("MEM_STEWARD_TOKEN must differ from MEM_API_TOKEN")
+	}
+	if cfg.APIToken == "" && cfg.StewardToken == "" && !isLoopbackListenAddress(listenAddr) {
+		log.Fatal("MEM_API_TOKEN (or MEM_STEWARD_TOKEN) is required when listening on a non-loopback address")
+	}
+	if !cfg.enabled() {
+		// A reverse proxy or socket proxy in front of a loopback listener makes
+		// every remote client look local, so running open must be a deliberate choice.
+		if os.Getenv("MEM_ALLOW_UNAUTHENTICATED") != "true" {
+			log.Fatal("no authentication configured: set MEM_API_TOKEN (and MEM_UI_PASSWORD for the web UI), or set MEM_ALLOW_UNAUTHENTICATED=true for local development only")
 		}
-		n.CapturedAt = fmt.Sprint(captured)
-		n.CreatedAt = fmt.Sprint(created)
-		n.UpdatedAt = fmt.Sprint(updated)
-		nodes = append(nodes, n)
+		log.Printf("WARNING: running without authentication (MEM_ALLOW_UNAUTHENTICATED=true); never put a proxy in front of this mode")
 	}
-	rows.Close()
-
-	// Fetch all edges
-	edges := []Edge{}
-	rows2, err := pool.Query(ctx, `SELECT id, src, dst, rel, weight, created_at FROM memory_edges ORDER BY created_at DESC`)
-	if err != nil {
-		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read edges for backup"})
-		return
+	if !cfg.strictStewardMode() {
+		log.Printf("WARNING: MEM_STEWARD_TOKEN is unset; writer identity is self-declared via X-Mem-Source, so any API client can claim to be the steward")
 	}
-	for rows2.Next() {
-		var e Edge
-		var created interface{}
-		if err := rows2.Scan(&e.ID, &e.Src, &e.Dst, &e.Rel, &e.Weight, &created); err != nil {
-			rows2.Close()
-			continue
-		}
-		e.CreatedAt = fmt.Sprint(created)
-		edges = append(edges, e)
-	}
-	rows2.Close()
-
-	backup := Backup{
-		Version:   "1.0",
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Nodes:     nodes,
-		Edges:     edges,
-	}
-
-	if useGzip {
-		w.Header().Set("Content-Type", "application/gzip")
-		w.Header().Set("Content-Disposition", "attachment; filename=mem-backup.json.gz")
-		gw := gzip.NewWriter(w)
-		defer gw.Close()
-		json.NewEncoder(gw).Encode(backup)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", "attachment; filename=mem-backup.json")
-	json.NewEncoder(w).Encode(backup)
-}
-
-func handleRestore(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-
-	// Check content type for gzip
-	isGzip := r.Header.Get("Content-Encoding") == "gzip" ||
-		(strings.HasPrefix(r.Header.Get("Content-Type"), "application/gzip"))
-
-	var reader io.Reader = r.Body
-	if isGzip {
-		gz, err := gzip.NewReader(r.Body)
-		if err != nil {
-			jsonResp(w, http.StatusBadRequest, map[string]string{"error": "invalid gzip data"})
-			return
-		}
-		defer gz.Close()
-		reader = gz
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
-	defer cancel()
-
-	var backup Backup
-	if err := json.NewDecoder(reader).Decode(&backup); err != nil {
-		jsonResp(w, http.StatusBadRequest, map[string]string{"error": "invalid backup JSON data"})
-		return
-	}
-
-	// Clear existing data
-	if _, err := pool.Exec(ctx, "DELETE FROM memory_nodes"); err != nil {
-		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to clear nodes"})
-		return
-	}
-	if _, err := pool.Exec(ctx, "DELETE FROM memory_edges"); err != nil {
-		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to clear edges"})
-		return
-	}
-
-	// Restore nodes via COPY for speed
-	nodeRows := nodeRowsFromBackup(backup.Nodes)
-	nodeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, restoredNodeColumns,
-		pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
-	if err != nil {
-		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to restore nodes: " + err.Error()})
-		return
-	}
-
-	// Restore edges via COPY for speed
-	edgeRows := make([][]any, 0, len(backup.Edges))
-	for _, e := range backup.Edges {
-		edgeRows = append(edgeRows, []any{e.ID, e.Src, e.Dst, e.Rel, e.Weight, e.CreatedAt})
-	}
-	edgeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_edges"}, []string{
-		"id", "src", "dst", "rel", "weight", "created_at",
-	}, pgx.CopyFromSlice(len(edgeRows), func(i int) ([]any, error) { return edgeRows[i], nil }))
-	if err != nil {
-		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "failed to restore edges: " + err.Error()})
-		return
-	}
-
-	jsonResp(w, 200, map[string]interface{}{
-		"status":    "restored",
-		"nodes":     nodeCount,
-		"edges":     edgeCount,
-		"timestamp": backup.Timestamp,
-	})
-}
-
-// restoredNodeColumns is the COPY column order that nodeRowsFromBackup builds.
-var restoredNodeColumns = []string{
-	"id", "body", "hash", "layer", "fact_type", "subject", "confidence",
-	"metadata", "topic", "captured_at", "created_at", "updated_at",
-	"source", "status", "fact_key",
-}
-
-// nodeRowsFromBackup flattens backup nodes for COPY. Backups written before the
-// steward columns existed have no source/status: default them so a restore never
-// resurrects rows into an unknown state.
-func nodeRowsFromBackup(nodes []Node) [][]any {
-	rows := make([][]any, 0, len(nodes))
-	for _, n := range nodes {
-		source := n.Source
-		if source == "" {
-			source = "agent"
-		}
-		status := n.Status
-		if status == "" {
-			status = statusActive
-		}
-		var factKey any
-		if n.FactKey != "" {
-			factKey = n.FactKey
-		}
-		rows = append(rows, []any{
-			n.ID, n.Body, hashBody(n.Body), n.Layer, n.FactType, n.Subject, n.Confidence,
-			n.Metadata, n.Topic, n.CapturedAt, n.CreatedAt, n.UpdatedAt,
-			source, status, factKey,
-		})
-	}
-	return rows
+	return listenAddr, cfg
 }
 
 func handleUI(w http.ResponseWriter, r *http.Request) {
+	page := dashboardHTML
 	if r.URL.Path == "/graph" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(graphHTML))
-		return
+		page = graphHTML
 	}
+	nonce := newNonce()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(dashboardHTML))
+	w.Header().Set("Content-Security-Policy", contentSecurityPolicy(nonce))
+	w.Header().Set("Cache-Control", "no-store")
+	io.WriteString(w, strings.ReplaceAll(page, "__CSP_NONCE__", nonce))
 }
 
 func bulkDeleteAllowed(r *http.Request) bool {
@@ -854,75 +733,6 @@ func isLoopbackListenAddress(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-func apiAuthMiddleware(token, uiUser, uiPass string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		isUI := r.URL.Path == "/" || r.URL.Path == "/graph"
-		isAPI := strings.HasPrefix(r.URL.Path, "/v1/memory/") ||
-			strings.HasPrefix(r.URL.Path, "/api/")
-
-		if isUI && uiPass != "" {
-			u, p, ok := r.BasicAuth()
-			uMatch := subtle.ConstantTimeCompare([]byte(u), []byte(uiUser)) == 1
-			pMatch := subtle.ConstantTimeCompare([]byte(p), []byte(uiPass)) == 1
-			if !ok || !uMatch || !pMatch {
-				w.Header().Set("WWW-Authenticate", `Basic realm="mem"`)
-				w.Header().Set("X-Content-Type-Options", "nosniff")
-				w.Header().Set("Referrer-Policy", "no-referrer")
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-
-		if isAPI && (token != "" || uiPass != "") {
-			authHeader := r.Header.Get("Authorization")
-			authorized := false
-
-			// 1. Bearer token check
-			if token != "" && strings.HasPrefix(authHeader, "Bearer ") {
-				provided := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-				if len(provided) == len(token) && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
-					authorized = true
-				}
-			}
-
-			// 2. Basic auth check (e.g. from browser UI)
-			if !authorized && uiPass != "" {
-				u, p, ok := r.BasicAuth()
-				if ok {
-					uMatch := subtle.ConstantTimeCompare([]byte(u), []byte(uiUser)) == 1
-					pMatch := subtle.ConstantTimeCompare([]byte(p), []byte(uiPass)) == 1
-					if uMatch && pMatch {
-						authorized = true
-					}
-				}
-			}
-
-			if !authorized {
-				if strings.HasPrefix(authHeader, "Basic ") {
-					w.Header().Set("WWW-Authenticate", `Basic realm="mem"`)
-				} else {
-					w.Header().Set("WWW-Authenticate", "Bearer")
-				}
-				w.Header().Set("X-Content-Type-Options", "nosniff")
-				w.Header().Set("Referrer-Policy", "no-referrer")
-				jsonResp(w, http.StatusUnauthorized, map[string]string{"error": "valid bearer token or basic auth required"})
-				return
-			}
-		}
-
-		if isAPI && r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
-			limit := int64(1 << 20)
-			if r.URL.Path == "/v1/memory/restore" {
-				limit = 100 << 20
-			}
-			r.Body = http.MaxBytesReader(w, r.Body, limit)
-		}
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		next.ServeHTTP(w, r)
-	})
 }
 
 func main() {
@@ -965,10 +775,13 @@ Usage:
 
 Environment variables:
   DATABASE_URL          PostgreSQL connection string (required)
-  MEM_API_TOKEN         API bearer token (required for non-loopback)
-  MEM_LISTEN_ADDR       Bind address (default: [IP_ADDRESS]:3200)
+  MEM_API_TOKEN         Bearer token for agents; their writes land in the inbox
+  MEM_STEWARD_TOKEN     Bearer token for the steward: active writes, inbox review, restore
+  MEM_LISTEN_ADDR       Bind address (default: 127.0.0.1:3200)
   MEM_UI_USER           Web UI basic auth username (default: admin)
-  MEM_UI_PASSWORD       Web UI basic auth password
+  MEM_UI_PASSWORD       Web UI basic auth password (signs in as steward)
+  MEM_ALLOWED_ORIGINS   Extra browser origins allowed to write (reverse proxies that rewrite Host)
+  MEM_ALLOW_UNAUTHENTICATED=true  Allow running without any credential (local development only)
 
 Examples:
   mem server                    # Start the HTTP server
@@ -984,6 +797,8 @@ Examples:
 		// ignore unexpected positional args
 	}
 	if cmd == "server" {
+		// Validate the listen address and credentials before touching the database.
+		listenAddr, authCfg := loadServerConfig()
 		initDB()
 		defer pool.Close()
 
@@ -1025,24 +840,8 @@ Examples:
 		mux.HandleFunc("/graph", handleUI)
 		mux.HandleFunc("/", handleUI)
 
-		listenAddr := strings.TrimSpace(os.Getenv("MEM_LISTEN_ADDR"))
-		if listenAddr == "" {
-			listenAddr = "[IP_ADDRESS]:" + port
-		}
-		apiToken := strings.TrimSpace(os.Getenv("MEM_API_TOKEN"))
-		if apiToken == "" && !isLoopbackListenAddress(listenAddr) {
-			log.Fatal("MEM_API_TOKEN is required when listening on a non-loopback address")
-		}
-		if apiToken == "" {
-			log.Printf("WARNING: MEM_API_TOKEN is unset; API is unauthenticated but bound to loopback only")
-		}
-		uiUser := strings.TrimSpace(os.Getenv("MEM_UI_USER"))
-		if uiUser == "" {
-			uiUser = "admin"
-		}
-		uiPass := strings.TrimSpace(os.Getenv("MEM_UI_PASSWORD"))
 		server := &http.Server{
-			Addr: listenAddr, Handler: apiAuthMiddleware(apiToken, uiUser, uiPass, mux),
+			Addr: listenAddr, Handler: apiAuthMiddleware(authCfg, mux),
 			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
 			WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,
 		}
@@ -1093,147 +892,6 @@ Examples:
 		fmt.Printf("Unknown command: %s\n", cmd)
 		flag.Usage()
 	}
-}
-
-func runCLIBackup(filename string, useGzip bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Fetch all nodes
-	nodes := []Node{}
-	rows, err := pool.Query(ctx, `SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, captured_at, created_at, updated_at, source, status, COALESCE(fact_key, '') FROM memory_nodes ORDER BY created_at DESC`)
-	if err != nil {
-		log.Fatalf("unable to read nodes for backup: %v", err)
-	}
-	for rows.Next() {
-		var n Node
-		var captured, created, updated interface{}
-		if scanErr := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &captured, &created, &updated, &n.Source, &n.Status, &n.FactKey); scanErr != nil {
-			rows.Close()
-			continue
-		}
-		n.CapturedAt = fmt.Sprint(captured)
-		n.CreatedAt = fmt.Sprint(created)
-		n.UpdatedAt = fmt.Sprint(updated)
-		nodes = append(nodes, n)
-	}
-	rows.Close()
-
-	// Fetch all edges
-	edges := []Edge{}
-	rows2, err := pool.Query(ctx, `SELECT id, src, dst, rel, weight, created_at FROM memory_edges ORDER BY created_at DESC`)
-	if err != nil {
-		log.Fatalf("unable to read edges for backup: %v", err)
-	}
-	for rows2.Next() {
-		var e Edge
-		var created interface{}
-		if scanErr := rows2.Scan(&e.ID, &e.Src, &e.Dst, &e.Rel, &e.Weight, &created); scanErr != nil {
-			rows2.Close()
-			continue
-		}
-		e.CreatedAt = fmt.Sprint(created)
-		edges = append(edges, e)
-	}
-	rows2.Close()
-
-	backup := Backup{
-		Version:   "1.0",
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Nodes:     nodes,
-		Edges:     edges,
-	}
-
-	// Output to file or stdout
-	var writer io.Writer = os.Stdout
-	if filename != "" && filename != "-" {
-		f, err := os.Create(filename)
-		if err != nil {
-			log.Fatalf("cannot create file %s: %v", filename, err)
-		}
-		defer f.Close()
-		writer = f
-	}
-
-	if useGzip {
-		gw := gzip.NewWriter(writer)
-		defer gw.Close()
-		if err := json.NewEncoder(gw).Encode(backup); err != nil {
-			log.Fatalf("failed to encode backup: %v", err)
-		}
-	} else {
-		if err := json.NewEncoder(writer).Encode(backup); err != nil {
-			log.Fatalf("failed to encode backup: %v", err)
-		}
-	}
-
-	fmt.Fprintf(os.Stderr, "Backup complete: %d nodes, %d edges\n", len(nodes), len(edges))
-}
-
-func runCLIRestore(filename string) {
-	if filename == "" {
-		log.Fatal("restore requires --file argument")
-	}
-
-	// Open file or use stdin
-	var reader io.Reader = os.Stdin
-	if filename != "-" {
-		var err error
-		f, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open file %s: %v", filename, err)
-		}
-		defer f.Close()
-		reader = f
-
-		// Auto-detect gzip by extension
-		if strings.HasSuffix(filename, ".gz") {
-			gz, err := gzip.NewReader(f)
-			if err != nil {
-				log.Fatalf("invalid gzip file: %v", err)
-			}
-			defer gz.Close()
-			reader = gz
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	var backup Backup
-	if err := json.NewDecoder(reader).Decode(&backup); err != nil {
-		log.Fatalf("invalid backup JSON data: %v", err)
-	}
-
-	// Clear existing data
-	if _, err := pool.Exec(ctx, "DELETE FROM memory_nodes"); err != nil {
-		log.Fatalf("failed to clear nodes: %v", err)
-	}
-	if _, err := pool.Exec(ctx, "DELETE FROM memory_edges"); err != nil {
-		log.Fatalf("failed to clear edges: %v", err)
-	}
-
-	// Restore nodes via COPY for speed
-	nodeRows := nodeRowsFromBackup(backup.Nodes)
-	nodeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, restoredNodeColumns,
-		pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
-	if err != nil {
-		log.Fatalf("failed to restore nodes: %v", err)
-	}
-
-	// Restore edges via COPY for speed
-	edgeRows := make([][]any, 0, len(backup.Edges))
-	for _, e := range backup.Edges {
-		edgeRows = append(edgeRows, []any{e.ID, e.Src, e.Dst, e.Rel, e.Weight, e.CreatedAt})
-	}
-	edgeCount, err := pool.CopyFrom(ctx, pgx.Identifier{"memory_edges"}, []string{
-		"id", "src", "dst", "rel", "weight", "created_at",
-	}, pgx.CopyFromSlice(len(edgeRows), func(i int) ([]any, error) { return edgeRows[i], nil }))
-	if err != nil {
-		log.Fatalf("failed to restore edges: %v", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Restore complete: %d nodes, %d edges restored\n", nodeCount, edgeCount)
 }
 
 func handleNodesList(w http.ResponseWriter, r *http.Request) {

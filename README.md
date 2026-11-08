@@ -30,10 +30,15 @@ Configure the process environment before starting it:
 DATABASE_URL=postgres://mem:REPLACE_ME@127.0.0.1:5432/mem?sslmode=disable
 MEM_LISTEN_ADDR=127.0.0.1:3200
 MEM_API_TOKEN=REPLACE_WITH_A_LONG_RANDOM_SECRET
+# Separate credential for the steward role (see "Roles" below). Must differ from MEM_API_TOKEN.
+MEM_STEWARD_TOKEN=REPLACE_WITH_ANOTHER_LONG_RANDOM_SECRET
 MEM_UI_USER=admin
 MEM_UI_PASSWORD=REPLACE_WITH_A_DIFFERENT_LONG_SECRET
-# Optional comma-separated identities allowed to write directly to active:
+# Optional comma-separated identities used to label steward writes:
 MEM_STEWARD_SOURCE=steward,hermes
+# Optional comma-separated browser origins allowed to send writes when a reverse
+# proxy rewrites the Host header, e.g. https://mem.example.com
+# MEM_ALLOWED_ORIGINS=
 ```
 
 Keep secrets in a root-owned environment file or secret manager; do not commit them. The service initializes/updates its tables on startup. For local development, load those variables from a protected file and run:
@@ -42,7 +47,14 @@ Keep secrets in a root-owned environment file or secret manager; do not commit t
 ./mem server
 ```
 
-The server must not be bound to a public interface without a valid `MEM_API_TOKEN`. Prefer binding to `127.0.0.1` and exposing it only through an authenticated, TLS-terminating reverse proxy. See [SECURITY.md](SECURITY.md) and [deployment and operations](docs/OPERATIONS.md).
+The server refuses to start when no credential is configured, unless `MEM_ALLOW_UNAUTHENTICATED=true` is set (local development only). It also refuses a non-loopback bind without `MEM_API_TOKEN` or `MEM_STEWARD_TOKEN`. Prefer binding to `127.0.0.1` and exposing it only through an authenticated, TLS-terminating reverse proxy. See [SECURITY.md](SECURITY.md) and [deployment and operations](docs/OPERATIONS.md).
+
+## Roles
+
+- **agent**: holds `MEM_API_TOKEN`. Can read and write, but every write lands in the inbox as `proposed`.
+- **steward**: holds `MEM_STEWARD_TOKEN`, or signs in to the web UI with `MEM_UI_USER`/`MEM_UI_PASSWORD`. Can write `active` nodes, promote or reject inbox items, rebuild edges, and restore backups.
+
+If `MEM_STEWARD_TOKEN` is not set the service runs in legacy mode: the `X-Mem-Source` header is trusted as-is, so any API client can claim to be the steward. It logs a warning at startup. Set `MEM_STEWARD_TOKEN` to make the steward role a real boundary.
 
 ## First check
 
@@ -56,7 +68,7 @@ Open `http://127.0.0.1:3200/graph` in a browser. If `MEM_UI_PASSWORD` is set, th
 
 ## Memory review model
 
-Every write has a source identity. `X-Mem-Source` takes precedence; otherwise the JSON `source` field is used, with `agent` as the default. Identities listed in `MEM_STEWARD_SOURCE` (default: `steward`) write `active` nodes. Other writers create `proposed` nodes, visible in the inbox, until reviewed. Normal node listing and search default to active records; request `status=proposed`, `status=retired`, or `status=all` to change the node-list filter. See [API reference](docs/API.md).
+Every write has a source identity. `X-Mem-Source` takes precedence; otherwise the JSON `source` field is used, with `agent` as the default. With `MEM_STEWARD_TOKEN` set, only steward credentials write `active` nodes; an agent that claims a steward label is stored as `unverified:<label>` and stays `proposed`. In legacy mode, identities listed in `MEM_STEWARD_SOURCE` (default: `steward`) write `active` nodes. Other writers create `proposed` nodes, visible in the inbox, until reviewed. Normal node listing and search default to active records; request `status=proposed`, `status=retired`, or `status=all` to change the node-list filter. See [API reference](docs/API.md).
 
 ## CLI
 

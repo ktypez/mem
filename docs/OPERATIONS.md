@@ -13,7 +13,7 @@ This guide covers running `mem` as a service, backup/restore, and rebuilding gen
    sudoedit /etc/mem/mem.env
    ```
 
-   Configure `DATABASE_URL`, `MEM_LISTEN_ADDR=127.0.0.1:3200`, `MEM_API_TOKEN`, and, when the UI is exposed, `MEM_UI_USER` and `MEM_UI_PASSWORD`. Optionally set `MEM_STEWARD_SOURCE=steward,hermes` for trusted writer identities. Keep credentials out of commands, logs, documentation, and repository files.
+   Configure `DATABASE_URL`, `MEM_LISTEN_ADDR=127.0.0.1:3200`, `MEM_API_TOKEN` (agents), `MEM_STEWARD_TOKEN` (steward role: active writes, inbox review, rebuild, restore), and, when the UI is exposed, `MEM_UI_USER` and `MEM_UI_PASSWORD`. Optionally set `MEM_STEWARD_SOURCE=steward,hermes` for steward writer labels and `MEM_ALLOWED_ORIGINS` when a reverse proxy rewrites the Host header. The service will not start without any credential unless `MEM_ALLOW_UNAUTHENTICATED=true` is set, which is for local development only. Keep credentials out of commands, logs, documentation, and repository files.
 3. Build and test with the Go version in `go.mod`:
 
    ```sh
@@ -43,7 +43,7 @@ This guide covers running `mem` as a service, backup/restore, and rebuilding gen
 
 ## Network exposure
 
-Keep the Go service bound to loopback. For remote access, use a suitably authenticated HTTPS reverse proxy or an explicitly scoped local-network socket proxy. Never bind to `0.0.0.0` as a shortcut. The sample `mem-lan.socket` and `mem-lan.service` are specific to a LAN interface/IP and must be reviewed for the target host, firewall, and authentication requirements; they are not a generic internet-facing deployment recipe. `/health` does not require authentication, so restrict network exposure even when API and UI authentication are configured.
+Keep the Go service bound to loopback. For remote access, use a suitably authenticated HTTPS reverse proxy or an explicitly scoped local-network socket proxy. Never bind to `0.0.0.0` as a shortcut. A proxy in front of a loopback listener makes every remote client look local, so credentials must be configured on the service itself; that is why startup refuses to run without them. Plain HTTP over a LAN sends tokens and Basic credentials in cleartext, so prefer TLS or an encrypted tunnel such as WireGuard/Tailscale. The sample `mem-lan.socket` and `mem-lan.service` are specific to a LAN interface/IP and must be reviewed for the target host, firewall, and authentication requirements; they are not a generic internet-facing deployment recipe. `/health` does not require authentication, so restrict network exposure even when API and UI authentication are configured.
 
 ## Backups and restore drills
 
@@ -55,24 +55,24 @@ umask 077
 ./mem backup --file /secure/backups/mem-$(date +%F-%H%M%S).json.gz --gzip
 ```
 
-The CLI restore operation imports a JSON backup; it does not perform a PostgreSQL schema snapshot or replace the `pg_dump` workflow. For full database recovery, use a protected PostgreSQL backup such as:
+Backups written by the CLI and by `GET /v1/memory/backup` use the same format and include every status, so they are interchangeable. CLI backup files are created with mode `0600`. The CLI restore operation imports a JSON backup (gzip is detected automatically) inside a single transaction, so a failed restore leaves the database unchanged; it does not perform a PostgreSQL schema snapshot or replace the `pg_dump` workflow. For full database recovery, use a protected PostgreSQL backup such as:
 
 ```sh
 umask 077
 pg_dump --format=custom --file="/secure/backups/mem-$(date +%F-%H%M%S).dump" "$PGDATABASE"
 ```
 
-Keep backups off-host, enforce retention, monitor job failures, and periodically restore into a separate test database. Do not test restores against the production database. The HTTP restore API is also a write operation and should be treated as potentially destructive.
+Keep backups off-host, enforce retention, monitor job failures, and periodically restore into a separate test database. Do not test restores against the production database. The HTTP restore API replaces all data, requires steward credentials, and must be sent with `X-Confirm-Restore: replace-all`.
 
 ## Rebuild generated graph edges
 
 `POST /v1/memory/rebuild-edges` deletes and recreates only `same_topic` and `same_subject` relationships. Manually created relationships and other relation types remain. Rebuilding considers all nodes, not only nodes with `active` status. It can create many pairwise edges if a topic or subject is shared by many nodes, so schedule it with database size/load in mind.
 
-Before running, take or confirm a current backup. Then call the authenticated endpoint:
+Before running, take or confirm a current backup. Then call the endpoint with steward credentials:
 
 ```sh
 curl -fsS -X POST http://127.0.0.1:3200/v1/memory/rebuild-edges \
-  -H "Authorization: Bearer $MEM_API_TOKEN" \
+  -H "Authorization: Bearer $MEM_STEWARD_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{}'
 ```
@@ -89,7 +89,10 @@ The endpoint returns the number of generated edges inserted. Verify afterward th
 
 - `memory.service` fails: check `systemctl status memory.service` and `journalctl -u memory.service`; do not print environment-file contents while diagnosing.
 - `/health` returns 503: confirm PostgreSQL reachability and the configured database, then inspect service logs.
+- `memory.service` exits at startup with "no authentication configured": set `MEM_API_TOKEN` (and `MEM_STEWARD_TOKEN`/`MEM_UI_PASSWORD`) in the environment file.
 - API returns 401: verify the bearer token or configured UI Basic credentials without echoing secrets.
+- API returns 403 "steward credentials required": the route needs `MEM_STEWARD_TOKEN` or the UI Basic login, not the agent token.
+- API returns 403 "cross-origin write rejected": a browser sent a write from another origin; add the proxy's public origin to `MEM_ALLOWED_ORIGINS`.
 - Browser UI loops/fails API requests: confirm Basic Auth is enabled/configured consistently and the page is accessed over a trusted network.
 - LAN access fails: verify the socket listens only on the intended interface, its address is current, firewall rules allow only trusted clients, and `memory.service` is healthy.
 - Graph appears stale: confirm the rebuild request returned success, then refresh the page and check edge statistics.
