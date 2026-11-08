@@ -10,7 +10,7 @@ Hermes can use mem through its memory plugin. Other harnesses can use the REST A
 4. Register the bridge in the harness MCP configuration using its local process/stdio transport. For OpenCode, use its current MCP configuration format and verify with `opencode mcp list`; configuration/CLI syntax may vary by installed version.
 5. Verify MCP initialize and tools/list before making writes. Try a read-only stats call, then (if needed) create a uniquely marked probe, verify it, delete it, and confirm cleanup.
 
-The service token resolution in the starter script checks process environment first, then the current user's Hermes `.env`, then `/etc/mem/mem.env`. Prefer environment injection or a secret manager; avoid broadening permissions on root-owned files merely to make a bridge work. Never print the token or DSN.
+The starter bridge reads its token only from the process environment (`MEM_API_TOKEN` or `HERMES_MEMORY_SERVICE_TOKEN`) and fails closed if neither is set. Provide it through the selected runtime's environment injection or secret manager; do not broaden permissions on root-owned files or hard-code credentials. Never print the token or DSN.
 
 ## Writer trust and visibility
 

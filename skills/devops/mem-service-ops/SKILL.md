@@ -13,7 +13,7 @@ metadata:
 
 # mem service operations
 
-Use this skill for changes, deployment, and troubleshooting in the mem repository. Follow the checked-in source and service units; do not assume host-specific paths or credentials.
+Use this portable Agent Skill for changes, deployment, and troubleshooting in the mem repository. It is not tied to a single assistant runtime. Follow the checked-in source and service units; do not assume host-specific paths or credentials.
 
 ## Prerequisites
 
@@ -44,6 +44,16 @@ Use this skill for changes, deployment, and troubleshooting in the mem repositor
 - Writer identity is read from `X-Mem-Source`, then JSON `source`, else `agent`. Identities in `MEM_STEWARD_SOURCE` can create active nodes; other identities create proposed nodes. Treat writer identity as a trust boundary: a shared API token does not distinguish clients.
 - Bulk deletion requires both `MEM_ENABLE_BULK_DELETE=true` and `X-Confirm-Delete: all`.
 
+## Agent runtime installation
+
+The skill follows the open Agent Skills layout and is not Hermes-only. Supported installer targets are Codex, OpenCode, Claude Code, and Hermes; other runtimes can use the standard skill directory or their documented repo-local discovery path. Read `skills/README.md` and run `scripts/install-agent-skill.sh` for user-level installation. Skill installation does not configure service credentials or MCP.
+
+- Prefer direct REST or a native connector where supported; the MCP bridge is optional for runtimes that use MCP.
+- Keep service URL/token in the runtime's environment or secret manager. The bridge reads only explicit environment variables and fails closed without a token.
+- `MEM_SOURCE` identifies the caller but does not authenticate it. Only put sources you explicitly trust in `MEM_STEWARD_SOURCE`; the service's current shared-token model cannot distinguish which caller supplied that header.
+- Codex may read the optional `agents/openai.yaml` metadata. Other agents can ignore it and read `SKILL.md` plus the linked references.
+- When installing for a new runtime, verify its actual skill discovery path and create a session that can list/load the skill before claiming support.
+
 ## Graph regeneration
 
 For a requested regeneration, use the authenticated `POST /v1/memory/rebuild-edges` API. It replaces generated `same_topic` and `same_subject` relationships, considers nodes of every status, and preserves other relationship types. Back up important data first. The response's `edges_created` value counts regenerated edges, not all edges. Verify the response, stats, and graph UI afterward; do not restart the service for this operation.
@@ -61,7 +71,7 @@ For a requested regeneration, use the authenticated `POST /v1/memory/rebuild-edg
 - System-owned facts are refreshed automatically; deleting one may only cause it to return. Use its supported retire/update workflow.
 - Live API probes create data. Record probe IDs and remove test records, then verify cleanup.
 - If a change requires restarting the Hermes gateway to reload a plugin, provide the exact restart command to the user instead of restarting it yourself.
-- The Hermes application installer does not automatically copy project skills. After cloning this repository, run `scripts/install-hermes-skill.sh`; start a new session if the skill is not discovered.
+- A mem deployment does not automatically install skills into agent runtimes. After cloning, install the portable skill with `scripts/install-agent-skill.sh` or place it in the runtime's documented repository-local skills directory. Skill installation does not configure service credentials or MCP.
 
 ## Connect another agent harness
 

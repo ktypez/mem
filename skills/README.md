@@ -1,31 +1,48 @@
-# Repository skills
+# Agent skills
 
-The repository includes Hermes Agent skills that provide reusable installation and operational procedures for this project.
+This repository ships a portable `mem-service-ops` skill in the [Agent Skills format](https://agentskills.io/specification). The instructions are tool-neutral and work with compatible agent runtimes; the included MCP bridge is optional, not required.
 
 ## Install
 
-Install the skill directory from the repository root into the target Hermes home with the provided installer:
+From the repository root, run:
 
 ```sh
-./scripts/install-hermes-skill.sh
+./scripts/install-agent-skill.sh
 ```
 
-It installs into `$HERMES_HOME/skills/devops/` or the default `$HOME/.hermes/skills/devops/`. For a named profile, set `HERMES_HOME` to that profile's Hermes home (for example, `$HOME/.hermes/profiles/<profile>`) before running it. If a different skill already exists at the destination, inspect it first; use `./scripts/install-hermes-skill.sh --replace` only when intentionally replacing it. The installer backs up a replaced copy under `$HERMES_HOME/cache/mem-skill-backups/`. Start a new Hermes session if the current session does not discover the newly installed skill.
+The default `all` target installs to the shared user-level skill directory for Codex/OpenCode (`~/.agents/skills`), Claude Code (`~/.claude/skills`), and Hermes (`$HERMES_HOME/skills/devops`, default `~/.hermes/skills/devops`). Choose one with `--target codex`, `--target opencode`, `--target claude`, or `--target hermes`. Codex and OpenCode share one copy here.
 
-## Included
+For a named Hermes profile, set `HERMES_HOME` to that profile's home. If a destination already has a different skill, the installer stops to preserve local changes. Review first, then use `--replace` intentionally; old copies are backed up under `~/.cache/mem-skill-backups/` or Hermes' cache. Start a new agent session if its skill list was already loaded.
 
-- [`devops/mem-service-ops/SKILL.md`](devops/mem-service-ops/SKILL.md) — mem service deployment, operations, trust boundaries, graph regeneration, and backup/restore guidance.
-- `devops/mem-service-ops/references/clients.md` — MCP client setup guidance.
-- `devops/mem-service-ops/scripts/verify-gate.sh` — optional live service trust-gate smoke test; creates and removes probe records.
-- `devops/mem-service-ops/templates/mem-mcp.py` — starter stdio MCP bridge for another agent harness.
+You may also install directly into a repository-local discovery directory, which keeps the skill beside the project for all contributors:
 
-The MCP bridge is a template; review it and configure authentication securely before use.
+- Codex: `.agents/skills/mem-service-ops/`
+- OpenCode: `.opencode/skills/mem-service-ops/` or its documented compatible `.agents/skills/` location
+- Claude Code: `.claude/skills/mem-service-ops/`
+- Other compatible runtimes: use their documented skill discovery path
+
+Copy `devops/mem-service-ops/` as a directory, preserving its `references/`, `scripts/`, `templates/`, and `agents/` subdirectories. Verify the skill is visible to the runtime before relying on it.
+
+## Contents
+
+- `devops/mem-service-ops/SKILL.md` — portable service workflow and safety rules.
+- `devops/mem-service-ops/references/clients.md` — REST/MCP client guidance.
+- `devops/mem-service-ops/scripts/verify-gate.sh` — optional live smoke test; creates and removes probes.
+- `devops/mem-service-ops/templates/mem-mcp.py` — optional stdio MCP bridge.
+- `devops/mem-service-ops/agents/openai.yaml` — optional Codex display metadata.
+
+## Use with another agent
+
+- Agent Skills compatibility loads instructions; it does not install/configure/authenticate mem.
+- Use direct REST or a native integration when available. Use MCP only if the runtime supports or requires MCP.
+- The bridge reads `MEM_SERVICE_URL`, `MEM_SOURCE`, and `MEM_API_TOKEN` from its process environment; it never reads Hermes-specific secret files and fails closed without a token.
+- `MEM_SOURCE` is an asserted identity, not authentication. Keep sources outside `MEM_STEWARD_SOURCE` unless their writes should bypass the review inbox. Shared API-token auth does not independently verify the identity header.
 
 ## Verify
 
 ```sh
-bash -n scripts/install-hermes-skill.sh
-HERMES_HOME="$HOME/.hermes" ./scripts/install-hermes-skill.sh
+bash -n scripts/install-agent-skill.sh
+./scripts/install-agent-skill.sh --help
 ```
 
-The installer is idempotent when the installed copy matches. It stops without replacing a differing copy unless `--replace` is explicitly provided.
+For any additional runtime, test its documented discovery path with a fresh session before claiming it is supported.

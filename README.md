@@ -69,13 +69,13 @@ Every write has a source identity. `X-Mem-Source` takes precedence; otherwise th
 
 Backup and restore use `DATABASE_URL` and connect directly to PostgreSQL. Store backups securely and test restores against a separate database before relying on them.
 
-## Hermes skill
+## Agent skill
 
-The repository includes an operational Hermes skill at `skills/devops/mem-service-ops/`. Install it with `./scripts/install-hermes-skill.sh` from the repository root. For a named profile, set `HERMES_HOME` to its Hermes home. The installer refuses to overwrite a different installed skill unless you pass `--replace`, and backs up replaced files. See [`skills/README.md`](skills/README.md).
+The repository includes a portable `mem-service-ops` skill for multiple AI agent runtimes. Use `./scripts/install-agent-skill.sh` for standard user-level locations or the runtime's repository-local skill path. See [`skills/README.md`](skills/README.md) for supported clients and install options.
 
 ## Documentation
 
 - [API reference](docs/API.md)
 - [Deployment, backups, and graph operations](docs/OPERATIONS.md)
 - [Security notes](SECURITY.md)
-- [Hermes skills and installation](skills/README.md)
+- [Agent skills and installation](skills/README.md)

@@ -17,31 +17,16 @@ import urllib.error
 import urllib.request
 
 BASE = os.environ.get("MEM_SERVICE_URL", "http://127.0.0.1:3200")
-SOURCE = os.environ.get("MEM_SOURCE", "opencode")   # this caller's X-Mem-Source identity
+SOURCE = os.environ.get("MEM_SOURCE", "agent")   # set to the calling harness identity
 
 
 def service_token() -> str:
-    """Bearer token for mem. Resolve per call: process env, then ~/.hermes/.env,
-    then /etc/mem/mem.env. The harness process env does not carry it."""
+    """Bearer token for mem. Resolve only from explicit process environment."""
     for key in ("MEM_API_TOKEN", "HERMES_MEMORY_SERVICE_TOKEN"):
         value = os.environ.get(key, "").strip()
         if value:
             return value
-    for path in (os.path.expanduser("~/.hermes/.env"), "/etc/mem/mem.env"):
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, _, v = line.partition("=")
-                    if k.strip() in ("MEM_API_TOKEN", "HERMES_MEMORY_SERVICE_TOKEN"):
-                        v = v.strip().strip('"').strip("'")
-                        if v:
-                            return v
-        except OSError:
-            continue
-    return ""
+    raise RuntimeError("Set MEM_API_TOKEN in the MCP process environment or secret manager")
 
 
 def call(method: str, path: str, body: dict | None = None) -> dict:

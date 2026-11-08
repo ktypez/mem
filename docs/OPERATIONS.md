@@ -33,13 +33,13 @@ This guide covers running `mem` as a service, backup/restore, and rebuilding gen
    ```
 
    The health route confirms the service can query PostgreSQL. Check the authenticated stats endpoint and load `/graph` from an authorized browser as a further smoke test.
-6. If this host runs Hermes and should use the repository's mem operations skill, install it as the Hermes user from the checked-out repository:
+6. If an AI agent on this host should use the repository's operations skill, install it for the chosen runtime from the checked-out repository:
 
    ```sh
-   ./scripts/install-hermes-skill.sh
+   ./scripts/install-agent-skill.sh
    ```
 
-   Set `HERMES_HOME` first for a named profile. The installer refuses to replace a different local copy unless explicitly told `--replace`; review local skill edits before doing so. Start a new Hermes session if the skill is not discovered. This step copies the skill and its support files into the Hermes home; it does not install or restart the mem service.
+   The default `all` target installs to Codex/OpenCode's shared `~/.agents/skills`, Claude Code's `~/.claude/skills`, and Hermes' `$HERMES_HOME/skills/devops` (default `~/.hermes/skills/devops`). Select `--target codex|opencode|claude|hermes` to install just one. Alternatively, place the skill in the runtime's repository-local skill directory. The installer preflights destinations and refuses to replace a differing copy unless explicitly given `--replace`. This installs skill files only; it does not install or authenticate mem, configure MCP, or restart any service.
 
 ## Network exposure
 
