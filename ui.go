@@ -8,7 +8,7 @@ const graphHTML = `<!DOCTYPE html>
 <title>mem — Memory Graph グラフ</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://d3js.org/d3.v7.min.js" nonce="__CSP_NONCE__"></script>
 <style>
   :root {
     --bg: #101114; --bg2: #17191e; --card: #1d2026;
@@ -88,8 +88,8 @@ const graphHTML = `<!DOCTYPE html>
     <div class="logo-mark">m</div>
     <div class="toolbar-title">Memory Graph <span class="toolbar-kana">グラフ</span></div>
     <a href="/" class="nav-link">← ダッシュボード</a>
-    <button class="btn" onclick="load()">Load Graph</button>
-    <button class="btn secondary" onclick="resetView()">Reset View</button>
+    <button class="btn" id="loadBtn">Load Graph</button>
+    <button class="btn secondary" id="resetBtn">Reset View</button>
     <span id="status">click Load to fetch</span>
     <div class="legend">
       <span><i style="background:#4FD1C0"></i>preference</span>
@@ -111,13 +111,13 @@ const graphHTML = `<!DOCTYPE html>
   Nodes: <span class="count" id="nodeCount">0</span> · Edges: <span class="count" id="edgeCount">0</span>
 </div>
 <div class="controls">
-  <button onclick="zoomIn()" title="Zoom in">+</button>
-  <button onclick="zoomOut()" title="Zoom out">−</button>
-  <button onclick="resetView()" title="Reset">⊙</button>
+  <button id="zoomInBtn" title="Zoom in">+</button>
+  <button id="zoomOutBtn" title="Zoom out">−</button>
+  <button id="zoomResetBtn" title="Reset">⊙</button>
 </div>
-<script>
+<script nonce="__CSP_NONCE__">
 const colors = {preference:'#4FD1C0',identity:'#F6AD55',context:'#90CDF4',experience:'#FC8181',activity:'#68D391',persona:'#F687B3',note:'#A0AEC0',semantic:'#8b5cf6',episodic:'#3b82f6',procedural:'#22c55e',profile:'#eab308',context:'#90CDF4'};
-function color(l){return colors[l]||'#B794F4';}
+function color(l){return Object.prototype.hasOwnProperty.call(colors,l)?colors[l]:'#B794F4';}
 const tooltip = document.getElementById('tooltip');
 const svg = d3.select('#graph');
 let simulation, zoom, g, node, link;
@@ -139,8 +139,12 @@ async function load(){
     const rawEdges=Array.isArray(edgesResp)?edgesResp:(edgesResp.edges||[]);
 
     // Deduplicate edges: keep only one edge per src-dst pair
+    // Edges can point at nodes that are not in the active list (retired or proposed
+    // nodes); d3.forceLink throws on those, so keep only edges between listed nodes.
+    const nodeIds = new Set(nodes.map(n => n.id));
     const seenPairs = new Set();
     const edges = rawEdges.filter(e => {
+      if (!nodeIds.has(e.src) || !nodeIds.has(e.dst)) return false;
       const key = e.src < e.dst ? e.src + '-' + e.dst : e.dst + '-' + e.src;
       if (seenPairs.has(key)) return false;
       seenPairs.add(key);
@@ -170,9 +174,14 @@ function render(nodes,edges){
   const existingLayers = [...new Set(nodes.map(n => n.layer))];
   const legendEl = document.querySelector('.legend');
   if (legendEl) {
-    legendEl.innerHTML = existingLayers.map(l =>
-      '<span><i style="background:' + (colors[l] || '#B794F4') + '"></i>' + l + '</span>'
-    ).join('');
+    // Built with DOM APIs and text nodes: layer names come from stored data.
+    legendEl.replaceChildren(...existingLayers.map(l => {
+      const item = document.createElement('span');
+      const dot = document.createElement('i');
+      dot.style.background = color(l);
+      item.append(dot, document.createTextNode(String(l == null ? 'unknown' : l)));
+      return item;
+    }));
   }
 
   zoom=d3.zoom().scaleExtent([0.05,8]).on('zoom',e=>{
@@ -229,7 +238,9 @@ function render(nodes,edges){
     tooltip.style.display='block';
     tooltip.style.left=(e.pageX+12)+'px';
     tooltip.style.top=(e.pageY-12)+'px';
-    tooltip.innerHTML='<div class="layer">'+(d.layer||'unknown')+'</div><div class="body">'+(d.body||d.id).slice(0,300)+'</div>';
+    const layerEl=document.createElement('div');layerEl.className='layer';layerEl.textContent=d.layer||'unknown';
+    const bodyEl=document.createElement('div');bodyEl.className='body';bodyEl.textContent=String(d.body||d.id).slice(0,300);
+    tooltip.replaceChildren(layerEl,bodyEl);
   }).on('mousemove',(e)=>{
     tooltip.style.left=(e.pageX+12)+'px';
     tooltip.style.top=(e.pageY-12)+'px';
@@ -240,6 +251,11 @@ function zoomIn(){ svg.transition().call(zoom.scaleBy,1.5); }
 function zoomOut(){ svg.transition().call(zoom.scaleBy,0.67); }
 function resetView(){ svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity); }
 
+document.getElementById('loadBtn').addEventListener('click',load);
+document.getElementById('resetBtn').addEventListener('click',resetView);
+document.getElementById('zoomInBtn').addEventListener('click',zoomIn);
+document.getElementById('zoomOutBtn').addEventListener('click',zoomOut);
+document.getElementById('zoomResetBtn').addEventListener('click',resetView);
 load();
 window.addEventListener('resize',()=>{ if(simulation){ const w=window.innerWidth,h=window.innerHeight-56; svg.attr('width',w).attr('height',h); } });
 </script>

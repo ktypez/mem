@@ -532,11 +532,15 @@ func handleInbox(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, 200, map[string]interface{}{"nodes": nodes, "count": len(nodes)})
 }
 
-// handleNodeDecision promotes or rejects a proposed node. Steward only.
+// handleNodeDecision promotes or rejects a proposed node. Steward only: enforced
+// by requireSteward, not just by convention.
 func handleNodeDecision(w http.ResponseWriter, r *http.Request, decision string) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !requireSteward(w, r) {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/v1/memory/nodes/")

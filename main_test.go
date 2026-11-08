@@ -55,7 +55,7 @@ func TestAPIAuthMiddleware(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	handler := apiAuthMiddleware("test-secret", "admin", "test-pass", next)
+	handler := apiAuthMiddleware(authConfig{APIToken: "test-secret", UIUser: "admin", UIPass: "test-pass"}, next)
 
 	// API without auth
 	unauthorized := httptest.NewRecorder()
@@ -122,7 +122,7 @@ func TestEveryAPIAliasRequiresAuth(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	handler := apiAuthMiddleware("test-secret", "admin", "test-pass", next)
+	handler := apiAuthMiddleware(authConfig{APIToken: "test-secret", UIUser: "admin", UIPass: "test-pass"}, next)
 
 	// Every path that reaches an API handler must be gated, including the
 	// /api/ aliases added alongside the steward endpoints.
