@@ -33,6 +33,13 @@ This guide covers running `mem` as a service, backup/restore, and rebuilding gen
    ```
 
    The health route confirms the service can query PostgreSQL. Check the authenticated stats endpoint and load `/graph` from an authorized browser as a further smoke test.
+6. If this host runs Hermes and should use the repository's mem operations skill, install it as the Hermes user from the checked-out repository:
+
+   ```sh
+   ./scripts/install-hermes-skill.sh
+   ```
+
+   Set `HERMES_HOME` first for a named profile. The installer refuses to replace a different local copy unless explicitly told `--replace`; review local skill edits before doing so. Start a new Hermes session if the skill is not discovered. This step copies the skill and its support files into the Hermes home; it does not install or restart the mem service.
 
 ## Network exposure
 
