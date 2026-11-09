@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -205,7 +204,7 @@ func indexPendingEmbeddings(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	rows, err := pool.Query(ctx,
-		`SELECT id, body FROM memory_nodes WHERE embedding IS NULL ORDER BY created_at LIMIT $1`, embedCfg.Batch)
+		`SELECT id, body FROM memory_nodes WHERE embedding IS NULL AND source <> 'system' ORDER BY created_at LIMIT $1`, embedCfg.Batch)
 	if err != nil {
 		return 0, err
 	}
@@ -249,41 +248,20 @@ func semanticIDs(ctx context.Context, query string, limit int) []string {
 		return nil
 	}
 	rows, err := pool.Query(ctx,
-		`SELECT id, source, (embedding <=> $1::vector)::float8
-		 FROM memory_nodes WHERE status = $2 AND embedding IS NOT NULL
+		`SELECT id FROM memory_nodes WHERE status = $2 AND embedding IS NOT NULL AND source <> 'system'
 		 ORDER BY embedding <=> $1::vector LIMIT $3`,
-		vectorLiteral(vectors[0]), statusActive, limit*3)
+		vectorLiteral(vectors[0]), statusActive, limit)
 	if err != nil {
 		log.Printf("semantic search query failed, using keyword search: %v", err)
 		return nil
 	}
 	defer rows.Close()
-	type hit struct {
-		id       string
-		adjusted float64
-	}
-	var hits []hit
+	var ids []string
 	for rows.Next() {
-		var id, source string
-		var dist float64
-		if err := rows.Scan(&id, &source, &dist); err != nil {
-			continue
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
 		}
-		// Auto-collected host facts embed near everything short and generic, so
-		// push them down without excluding them. The vector index still drives
-		// the candidate set; this is only a re-rank.
-		if source == sourceSystem {
-			dist += 0.12
-		}
-		hits = append(hits, hit{id: id, adjusted: dist})
-	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].adjusted < hits[j].adjusted })
-	ids := make([]string, 0, limit)
-	for _, h := range hits {
-		if len(ids) >= limit {
-			break
-		}
-		ids = append(ids, h.id)
 	}
 	return ids
 }
