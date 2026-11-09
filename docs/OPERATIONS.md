@@ -43,7 +43,7 @@ This guide covers running `mem` as a service, backup/restore, and rebuilding gen
 
 ## Network exposure
 
-Keep the Go service bound to loopback. Never bind to `0.0.0.0` as a shortcut. A proxy in front of a loopback listener makes every remote client look local, so credentials must be configured on the service itself. Plain HTTP over a LAN sends tokens and Basic credentials in cleartext; use the Tailscale Serve HTTPS endpoint for remote access instead. The host-specific `mem-lan.socket` / `mem-lan.service` exposes unauthenticated HTTP on the Wi-Fi LAN and should remain disabled unless that exposure is explicitly required; the sample is not a generic internet-facing deployment recipe. `/health` does not require authentication, so restrict access even when API and UI authentication are configured.
+Keep the Go service bound to loopback. Never bind to `0.0.0.0` as a shortcut. A proxy in front of a loopback listener makes every remote client look local, so credentials must be configured on the service itself. Plain HTTP over a LAN sends tokens and Basic credentials in cleartext; use the Tailscale Serve HTTPS endpoint for remote access instead. The host-specific `mem-lan.socket` / `mem-lan.service` forwards the Wi-Fi LAN address to the loopback listener so the dashboard card can reach the console from another device; the service still enforces bearer/Basic auth (an unauthenticated request gets 401). Enable it only when LAN access is wanted, and note that credentials travel unencrypted on that hop. The sample is not a generic internet-facing deployment recipe. `/health` does not require authentication, so restrict access even when API and UI authentication are configured.
 
 ## Backups and restore drills
 
