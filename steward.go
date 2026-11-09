@@ -168,7 +168,8 @@ func collectSystemFacts() []SystemFact {
 		}
 	}
 
-	// Listening TCP ports.
+	// Listening TCP ports. Ephemeral/high ports belong to short-lived client
+	// sockets and change every refresh, so they are not durable facts.
 	if out, err := runCmd("ss", "-tlnH"); err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 			f := strings.Fields(line)
@@ -177,7 +178,7 @@ func collectSystemFacts() []SystemFact {
 			}
 			addr := f[3]
 			port := addr[strings.LastIndex(addr, ":")+1:]
-			if port == "" {
+			if port == "" || isEphemeralPort(port) {
 				continue
 			}
 			facts = append(facts, SystemFact{
@@ -189,9 +190,10 @@ func collectSystemFacts() []SystemFact {
 		}
 	}
 
-	// systemd units that are not in a healthy resting state.
-	// Socket-activated services sit inactive between connections by design, so
-	// they are not failures — skip the ones a live socket can start.
+	// systemd units that actually need attention. "inactive (dead)" and
+	// "active (exited)" are the normal resting state for most units (oneshots,
+	// disabled-on-boot helpers, socket-activated services), so only a failed
+	// unit is a durable fact worth storing.
 	sockets := socketActivatedUnits()
 	if out, err := runCmd("systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend"); err == nil {
 		for _, line := range strings.Split(out, "\n") {
@@ -200,7 +202,7 @@ func collectSystemFacts() []SystemFact {
 				continue
 			}
 			unit, load, active, sub := f[0], f[1], f[2], f[3]
-			if load != "loaded" || (active == "active" && sub == "running") {
+			if load != "loaded" || active != "failed" {
 				continue
 			}
 			if socketTriggeredService(sockets, unit) {
@@ -208,7 +210,7 @@ func collectSystemFacts() []SystemFact {
 			}
 			facts = append(facts, SystemFact{
 				Key:     "system:service:" + unit,
-				Body:    fmt.Sprintf("Service %s is %s (%s) — load state %s.", unit, active, sub, load),
+				Body:    fmt.Sprintf("Service %s failed (%s).", unit, sub),
 				Topic:   "services",
 				Subject: unit,
 			})
@@ -232,6 +234,16 @@ func collectSystemFacts() []SystemFact {
 	}
 
 	return facts
+}
+
+// isEphemeralPort reports whether port falls in the kernel's default ephemeral
+// range. Those listeners are transient client-side sockets, not services.
+func isEphemeralPort(port string) bool {
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return true
+	}
+	return n >= 32768
 }
 
 // socketActivatedUnits returns the base names of service units that a live
@@ -393,7 +405,9 @@ func sweepAgentSetupFacts() (retired, demoted int, err error) {
 		if !setupFactPattern.MatchString(c.body) {
 			continue
 		}
-		// Does a live system fact already cover this?
+		// Only act when a live system fact already covers this. Merely
+		// resembling a setup fact is not evidence of staleness: real notes
+		// contain paths, ports, and unit names all the time.
 		var overlap int
 		_ = pool.QueryRow(context.Background(), `
 			SELECT count(*) FROM memory_nodes
@@ -401,28 +415,18 @@ func sweepAgentSetupFacts() (retired, demoted int, err error) {
 			  AND fact_key IS NOT NULL
 			  AND (subject = ANY(string_to_array(lower($1), ' ')) OR lower(body) LIKE '%' || lower($1) || '%')`,
 			firstWords(c.body, 6)).Scan(&overlap)
-
-		if overlap > 0 {
-			_, err := pool.Exec(context.Background(),
-				`UPDATE memory_nodes SET status = $1, updated_at = $2,
-				 metadata = jsonb_set(metadata::jsonb, '{swept_reason}', '"superseded by a live system fact"')::text
-				 WHERE id = $3`,
-				statusRetired, nowStr, c.id)
-			if err != nil {
-				return retired, demoted, err
-			}
-			retired++
-		} else {
-			_, err := pool.Exec(context.Background(),
-				`UPDATE memory_nodes SET status = $1, updated_at = $2,
-				 metadata = jsonb_set(metadata::jsonb, '{swept_reason}', '"reads like a setup fact but no live system fact covers it; steward review required"')::text
-				 WHERE id = $3`,
-				statusProposed, nowStr, c.id)
-			if err != nil {
-				return retired, demoted, err
-			}
-			demoted++
+		if overlap == 0 {
+			continue
 		}
+		_, err := pool.Exec(context.Background(),
+			`UPDATE memory_nodes SET status = $1, updated_at = $2,
+			 metadata = jsonb_set(metadata::jsonb, '{swept_reason}', '"superseded by a live system fact"')::text
+			 WHERE id = $3`,
+			statusRetired, nowStr, c.id)
+		if err != nil {
+			return retired, demoted, err
+		}
+		retired++
 	}
 	return retired, demoted, nil
 }
