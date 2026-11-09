@@ -13,7 +13,7 @@ This guide covers running `mem` as a service, backup/restore, and rebuilding gen
    sudoedit /etc/mem/mem.env
    ```
 
-   Configure `DATABASE_URL`, `MEM_LISTEN_ADDR=127.0.0.1:3200`, `MEM_API_TOKEN` (agents), `MEM_STEWARD_TOKEN` (steward role: active writes, inbox review, rebuild, restore), and, when the UI is exposed, `MEM_UI_USER` and `MEM_UI_PASSWORD`. Optionally set `MEM_STEWARD_SOURCE=steward,hermes` for steward writer labels and `MEM_ALLOWED_ORIGINS` when a reverse proxy rewrites the Host header. The service will not start without any credential unless `MEM_ALLOW_UNAUTHENTICATED=true` is set, which is for local development only. Keep credentials out of commands, logs, documentation, and repository files.
+   Configure `DATABASE_URL`, `MEM_LISTEN_ADDR=127.0.0.1:3200`, `MEM_API_TOKEN` (agents), `MEM_STEWARD_TOKEN` (steward role: active writes, inbox review, rebuild, restore), and, when the UI is exposed, `MEM_UI_USER` and `MEM_UI_PASSWORD`. Optionally set `MEM_STEWARD_SOURCE=steward,hermes` for steward writer labels and `MEM_ALLOWED_ORIGINS` when a reverse proxy rewrites the Host header. For optional semantic search, install the `vector` extension once as a superuser and set `MEM_EMBED_URL`, `MEM_EMBED_MODEL` and `MEM_EMBED_API_KEY`; leave them unset to keep keyword-only search. The service will not start without any credential unless `MEM_ALLOW_UNAUTHENTICATED=true` is set, which is for local development only. Keep credentials out of commands, logs, documentation, and repository files.
 3. Build and test with the Go version in `go.mod`:
 
    ```sh

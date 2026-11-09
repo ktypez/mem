@@ -465,27 +465,79 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		q = fmt.Sprint(data["query"])
 	}
 	limit := 10
-	rows, err := pool.Query(context.Background(),
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	if limit < 1 || limit > 200 {
+		limit = 10
+	}
+	nodes := searchNodes(r.Context(), q, limit)
+	jsonResp(w, 200, map[string]interface{}{"results": nodes, "count": len(nodes), "semantic": vectorReady})
+}
+
+// searchNodes prefers exact keyword matches and then fills the remaining slots
+// with semantically similar nodes. Without a configured embedding model it is a
+// plain keyword search.
+func searchNodes(ctx context.Context, q string, limit int) []Node {
+	nodes := []Node{}
+	seen := map[string]bool{}
+	rows, err := pool.Query(ctx,
 		`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, created_at, updated_at, source, status, COALESCE(fact_key, '')
 		 FROM memory_nodes WHERE body ILIKE $1 AND status = $3 ORDER BY created_at DESC LIMIT $2`,
 		"%"+q+"%", limit, statusActive)
-	if err != nil {
-		jsonResp(w, 500, map[string]string{"error": err.Error()})
-		return
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var n Node
+			var created, updated interface{}
+			if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &created, &updated, &n.Source, &n.Status, &n.FactKey); err != nil {
+				continue
+			}
+			n.CreatedAt = fmt.Sprint(created)
+			n.UpdatedAt = fmt.Sprint(updated)
+			seen[n.ID] = true
+			nodes = append(nodes, n)
+		}
 	}
-	defer rows.Close()
-	nodes := []Node{}
-	for rows.Next() {
+	if len(nodes) >= limit {
+		return nodes
+	}
+	ids := semanticIDs(ctx, q, limit*2)
+	if len(ids) == 0 {
+		return nodes
+	}
+	rows2, err := pool.Query(ctx,
+		`SELECT id, body, layer, topic, subject, confidence, fact_type, metadata, created_at, updated_at, source, status, COALESCE(fact_key, '')
+		 FROM memory_nodes WHERE id = ANY($1) AND status = $2`,
+		ids, statusActive)
+	if err != nil {
+		return nodes
+	}
+	defer rows2.Close()
+	byID := map[string]Node{}
+	for rows2.Next() {
 		var n Node
 		var created, updated interface{}
-		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &created, &updated, &n.Source, &n.Status, &n.FactKey); err != nil {
+		if err := rows2.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType, &n.Metadata, &created, &updated, &n.Source, &n.Status, &n.FactKey); err != nil {
 			continue
 		}
 		n.CreatedAt = fmt.Sprint(created)
 		n.UpdatedAt = fmt.Sprint(updated)
-		nodes = append(nodes, n)
+		byID[n.ID] = n
 	}
-	jsonResp(w, 200, map[string]interface{}{"results": nodes, "count": len(nodes)})
+	for _, id := range ids {
+		if len(nodes) >= limit {
+			break
+		}
+		if seen[id] {
+			continue
+		}
+		if n, ok := byID[id]; ok {
+			seen[id] = true
+			nodes = append(nodes, n)
+		}
+	}
+	return nodes
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
@@ -569,16 +621,33 @@ func handleContext(w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(context.Background(),
 		`SELECT body FROM memory_nodes WHERE body ILIKE $1 AND status = $3 ORDER BY created_at DESC LIMIT $2`,
 		"%"+query+"%", limit, statusActive)
-	if err != nil {
-		jsonResp(w, 500, map[string]string{"error": err.Error()})
-		return
+	if err == nil {
+		defer rows.Close()
 	}
-	defer rows.Close()
 	var bodies []string
-	for rows.Next() {
-		var b string
-		rows.Scan(&b)
-		bodies = append(bodies, b)
+	if err == nil {
+		for rows.Next() {
+			var b string
+			rows.Scan(&b)
+			bodies = append(bodies, b)
+		}
+	}
+	// Top up with semantically related memories when keyword hits are scarce.
+	if len(bodies) < limit && strings.TrimSpace(query) != "" {
+		seen := map[string]bool{}
+		for _, b := range bodies {
+			seen[b] = true
+		}
+		for _, n := range searchNodes(context.Background(), query, limit) {
+			if len(bodies) >= limit {
+				break
+			}
+			if seen[n.Body] {
+				continue
+			}
+			seen[n.Body] = true
+			bodies = append(bodies, n.Body)
+		}
 	}
 	ctx := strings.Join(bodies, "\n---\n")
 	jsonResp(w, 200, map[string]interface{}{"context": ctx})
@@ -781,6 +850,10 @@ Environment variables:
   MEM_UI_USER           Web UI basic auth username (default: admin)
   MEM_UI_PASSWORD       Web UI basic auth password (signs in as steward)
   MEM_ALLOWED_ORIGINS   Extra browser origins allowed to write (reverse proxies that rewrite Host)
+  MEM_EMBED_URL         OpenAI-compatible base URL for optional semantic search (unset = keyword only)
+  MEM_EMBED_MODEL       Embedding model name; both URL and model are required to enable it
+  MEM_EMBED_API_KEY     Bearer token for the embedding endpoint (keep in the env file)
+  MEM_EMBED_DIM         Embedding dimension (default: 1024)
   MEM_ALLOW_UNAUTHENTICATED=true  Allow running without any credential (local development only)
 
 Examples:
@@ -801,6 +874,7 @@ Examples:
 		listenAddr, authCfg := loadServerConfig()
 		initDB()
 		defer pool.Close()
+		initEmbeddings()
 
 		mux := http.NewServeMux()
 
@@ -849,6 +923,8 @@ Examples:
 		// Live-system facts are re-read and swept in the background.
 		stopRefresher := make(chan struct{})
 		go startFactRefresher(stopRefresher)
+		// Optional semantic index is filled outside the request path.
+		go startEmbeddingIndexer(stopRefresher)
 
 		// Shut down cleanly so the refresher stops instead of writing mid-exit.
 		ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

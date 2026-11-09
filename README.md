@@ -36,9 +36,18 @@ MEM_UI_USER=admin
 MEM_UI_PASSWORD=REPLACE_WITH_A_DIFFERENT_LONG_SECRET
 # Optional comma-separated identities used to label steward writes:
 MEM_STEWARD_SOURCE=steward,hermes
-# Optional comma-separated browser origins allowed to send writes when a reverse
+# Optional comma-separated browser origins allowed to write when a reverse
 # proxy rewrites the Host header, e.g. https://mem.example.com
 # MEM_ALLOWED_ORIGINS=
+# Optional semantic search. Leave both unset to run keyword-only search; set an
+# OpenAI-compatible /embeddings endpoint and model to enable it. Requires the
+# pgvector extension in the database.
+# MEM_EMBED_URL=https://api.example.com/v1
+# MEM_EMBED_MODEL=bge-m3
+# MEM_EMBED_API_KEY=REPLACE_WITH_PROVIDER_TOKEN
+# MEM_EMBED_DIM=1024
+# MEM_EMBED_INTERVAL_SECONDS=120
+# MEM_EMBED_BATCH=16
 ```
 
 Keep secrets in a root-owned environment file or secret manager; do not commit them. The service initializes/updates its tables on startup. For local development, load those variables from a protected file and run:
@@ -65,6 +74,17 @@ curl -fsS -H "Authorization: Bearer $MEM_API_TOKEN" \
 ```
 
 Open `http://127.0.0.1:3200/graph` in a browser. If `MEM_UI_PASSWORD` is set, the UI uses HTTP Basic Authentication. API clients use the bearer token; the UI can also use its Basic credentials for API requests.
+
+## Semantic search (optional)
+
+Keyword search (`ILIKE`) is the default and needs no model. Setting `MEM_EMBED_URL` and `MEM_EMBED_MODEL` enables an optional semantic layer:
+
+- The service adds a `vector` column (`MEM_EMBED_DIM`, default 1024), creates an HNSW cosine index, and fills embeddings in a background indexer — never in the request path.
+- Any OpenAI-compatible `/embeddings` endpoint works. `MEM_EMBED_API_KEY` is read from the environment file, never from a client request.
+- Search still returns keyword hits first and tops up the remaining slots with semantically similar nodes, so a slow or unavailable provider degrades to keyword-only instead of failing.
+- Re-embedding is per node: new writes are picked up automatically; after changing the model or dimension, existing vectors must be regenerated.
+
+Requirements: the `vector` extension must be installed in the database. `CREATE EXTENSION` needs a superuser once, then the service's own role can use it.
 
 ## Memory review model
 
