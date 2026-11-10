@@ -81,6 +81,29 @@ const graphHTML = `<!DOCTYPE html>
     font-family: 'JetBrains Mono', monospace; z-index: 10;
   }
   .info-badge .count { color: var(--accent); font-weight: 600; }
+  /* DATA Ledger V5 — Paper Pop graph surface */
+  :root {
+    color-scheme: light;
+    --bg: #f6f2e9; --bg2: #eee9db; --card: #fffdf6;
+    --border: #e6dfcc; --border2: #cfc5a9;
+    --text: #28251d; --text2: #6f685b; --muted: #8b8375;
+    --accent: #158068; --accent2: #0f6652;
+    --green: #158068; --red: #d9453a; --yellow: #c77d0a; --blue: #3e63dd;
+    --radius: 14px; --radius-sm: 10px;
+  }
+  body { background-color: var(--bg); background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 22px 22px; background-attachment: fixed; color: var(--text); }
+  #toolbar { background: var(--bg2); border-bottom: 1.5px solid var(--text); }
+  .logo-mark { background: var(--accent); color: #fff; border: 1.5px solid var(--text); border-radius: 10px; box-shadow: 2px 2px 0 var(--text); transform: rotate(-4deg); }
+  .btn, .controls button { background: var(--card); color: var(--text); border: 1.5px solid var(--text); border-radius: 999px; box-shadow: 2px 2px 0 var(--text); }
+  .btn:hover, .controls button:hover { background: var(--accent); color: #fff; border-color: var(--text); }
+  .nav-link { color: var(--accent); }
+  .nav-link:hover { background: var(--bg); }
+  #status, .legend span, .toolbar-kana { color: var(--text2); }
+  .legend i { border: 1px solid var(--text); }
+  .tooltip, .info-badge { background: var(--card); color: var(--text); border: 1.5px solid var(--text); border-radius: var(--radius-sm); box-shadow: 3px 3px 0 var(--text); }
+  .tooltip .layer, .info-badge .count { color: var(--accent); }
+  #graph { background-color: transparent; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body>
