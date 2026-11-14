@@ -1,7 +1,0 @@
-interface:
-  display_name: "mem service operations"
-  short_description: "Operate and deploy the mem service safely"
-  default_prompt: "Use this skill to guide changes and deployment for the mem service."
-
-policy:
-  allow_implicit_invocation: true
