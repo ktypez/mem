@@ -40,7 +40,9 @@ Compatibility API (existing clients keep working):
 - `GET /v1/memory/backup`, `POST /v1/memory/restore` — gzipped tar archive
 - `POST /v1/memory/nodes/{id}/promote|reject` — accepted, answers `noop`
 
-The web UI at `/` is a single page: search, read, edit, create, trash.
+The web UI at `/` is a single page in the shared V5 "paper pop" skin: search,
+read, edit, create, trash, with the page list in a drawer on a phone. No
+external assets; it works with Basic auth.
 
 ## CLI
 
