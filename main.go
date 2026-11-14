@@ -176,6 +176,30 @@ func runServer() error {
 	return nil
 }
 
+// flagsFirst reorders CLI arguments so flags precede positional arguments:
+// Go's flag package stops parsing at the first positional, which surprises
+// users who write `mem add page "text" -source x`.
+func flagsFirst(args []string) []string {
+	var flags, rest []string
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") && len(args[i]) > 1 {
+			flags = append(flags, args[i])
+			switch args[i] {
+			case "-gzip", "-h", "-help", "-help=true":
+				// boolean flags take no value
+			default:
+				if i+1 < len(args) {
+					flags = append(flags, args[i+1])
+					i++
+				}
+			}
+		} else {
+			rest = append(rest, args[i])
+		}
+	}
+	return append(flags, rest...)
+}
+
 func main() {
 	osArgs := os.Args[1:]
 	if len(osArgs) == 0 {
@@ -183,12 +207,17 @@ func main() {
 	}
 	cmd := osArgs[0]
 	rest := osArgs[1:]
+	if cmd == "add" || cmd == "search" {
+		rest = flagsFirst(rest)
+	}
 
 	var showHelp bool
 	var legacyBackupFlag string // -backup, accepted for CLI compatibility
 	var legacyRestoreFlag string
 	var fileFlag string
 	var useGzip bool
+	var searchLimit int
+	var cliSource string
 
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.BoolVar(&showHelp, "help", false, "show help")
@@ -197,6 +226,8 @@ func main() {
 	fs.StringVar(&legacyRestoreFlag, "restore", "", "alias for --file (compat)")
 	fs.StringVar(&fileFlag, "file", "", "file path for backup/restore/import (use - for stdin/stdout)")
 	fs.BoolVar(&useGzip, "gzip", false, "use gzip compression for backup")
+	fs.IntVar(&searchLimit, "limit", 10, "max results for search")
+	fs.StringVar(&cliSource, "source", "cli", "writer label recorded by mem add")
 	if err := fs.Parse(rest); err != nil {
 		fmt.Println(err)
 		return
@@ -207,6 +238,11 @@ func main() {
 
 Usage:
   mem server                    Start the HTTP server
+  mem list                      List wiki pages (title, tags, updated)
+  mem show PAGE                 Print a page (title or slug)
+  mem search QUERY [-limit N]   Search the wiki
+  mem add PAGE TEXT [-source S] Append a fact line to a page
+  mem organize                  Nightly housekeeping (dedupe, trash rotation)
   mem backup --file FILE        Backup the wiki (gzipped tar; use - for stdout)
   mem restore --file FILE       Restore the wiki from a backup
   mem reindex                   Rebuild the search index from the page files
@@ -269,6 +305,77 @@ Examples:
 			log.Fatal(err)
 		}
 		fmt.Printf("Index rebuilt: %d change(s) synced\n", n)
+		return
+	case "list":
+		pages, err := listPages()
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, p := range pages {
+			fmt.Printf("%-40s %-18s %s  [%s]\n", p.Title, p.Slug, strings.TrimSpace(p.UpdatedAt[:10]), strings.Join(p.Tags, ","))
+		}
+		fmt.Printf("(%d pages)\n", len(pages))
+		return
+	case "show":
+		if len(fs.Args()) < 1 {
+			fmt.Println("usage: mem show PAGE")
+			return
+		}
+		name := fs.Args()[0]
+		p, err := loadPage(slugify(name))
+		if err != nil {
+			slug, slugErr := slugForTitle(name)
+			if slugErr == nil {
+				p, err = loadPage(slug)
+			}
+		}
+		if err != nil {
+			fmt.Printf("page not found: %s\n", name)
+			os.Exit(1)
+		}
+		out, _ := os.ReadFile(pageFile(p.Slug))
+		os.Stdout.Write(out)
+		return
+	case "search":
+		query := strings.Join(fs.Args(), " ")
+		if strings.TrimSpace(query) == "" {
+			fmt.Println("usage: mem search QUERY")
+			return
+		}
+		if err := openIndex(); err != nil {
+			log.Fatal(err)
+		}
+		defer closeIndex()
+		hits := searchWiki(query, searchLimit)
+		for _, h := range hits {
+			fmt.Printf("## %s (%s)\n%s\n\n", h.Title, h.Slug, h.Excerpt)
+		}
+		fmt.Printf("(%d result(s))\n", len(hits))
+		return
+	case "add":
+		args := fs.Args()
+		if len(args) < 2 {
+			fmt.Println("usage: mem add PAGE TEXT")
+			return
+		}
+		if err := openIndex(); err != nil {
+			log.Fatal(err)
+		}
+		defer closeIndex()
+		p, created, err := appendFact(args[0], "", strings.Join(args[1:], " "), cliSource)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("appended to %q (page %s, %s)\n", p.Title, p.Slug, map[bool]string{true: "created", false: "updated"}[created])
+		return
+	case "organize":
+		res, err := runOrganizer()
+		if err != nil {
+			log.Fatal(err)
+		}
+		organizeLog(res)
+		closeIndex()
+		fmt.Println(formatOrganizeResult(res))
 		return
 	case "import-legacy":
 		if err := runImportLegacy(fileFlag); err != nil {
