@@ -152,11 +152,12 @@ func matchQuery(q string) string {
 
 // searchHit is one search result: the page it came from plus a short excerpt.
 type searchHit struct {
-	Slug    string   `json:"slug"`
-	Title   string   `json:"title"`
-	Tags    []string `json:"tags"`
-	Body    string   `json:"body"`
-	Excerpt string   `json:"excerpt"`
+	Slug      string   `json:"slug"`
+	Title     string   `json:"title"`
+	Tags      []string `json:"tags"`
+	Body      string   `json:"body"`
+	Excerpt   string   `json:"excerpt"`
+	UpdatedAt string   `json:"updated_at"`
 }
 
 // searchWiki runs FTS first, then falls back to a substring scan. Queries
@@ -210,17 +211,18 @@ func searchWiki(query string, limit int) []searchHit {
 
 	hits := []searchHit{}
 	for _, slug := range slugs {
-		var title, body, tags string
+		var title, body, tags, updatedAt string
 		if err := indexDB.QueryRow(
-			`SELECT title, body, tags FROM pages WHERE slug = ?`, slug).Scan(&title, &body, &tags); err != nil {
+			`SELECT title, body, tags, updated_at FROM pages WHERE slug = ?`, slug).Scan(&title, &body, &tags, &updatedAt); err != nil {
 			continue
 		}
 		hits = append(hits, searchHit{
-			Slug:    slug,
-			Title:   title,
-			Tags:    splitTags(tags),
-			Body:    body,
-			Excerpt: excerpt(body, q, 240),
+			Slug:      slug,
+			Title:     title,
+			Tags:      splitTags(tags),
+			Body:      body,
+			Excerpt:   excerpt(body, q, 240),
+			UpdatedAt: updatedAt,
 		})
 		if len(hits) >= limit {
 			break

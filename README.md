@@ -45,12 +45,22 @@ The web UI at `/` is a single page: search, read, edit, create, trash.
 ## CLI
 
 ```sh
-mem server                       # start the HTTP server
-mem backup --file backup.tar.gz  # gzipped tar of the wiki directory
+mem                               # interactive TUI (browse, search, create pages)
+mem list                          # pages; styled table on a terminal
+mem show PAGE                     # page; rendered markdown on a terminal
+mem search QUERY                  # full-text search; plain when piped
+mem add PAGE "fact text"          # append a fact line to a page's ## Facts
+mem server                        # start the HTTP server
+mem backup --file backup.tar.gz   # gzipped tar of the wiki directory
 mem restore --file backup.tar.gz
-mem reindex                      # rebuild the search index from the files
+mem reindex                       # rebuild the search index from the files
 mem import-legacy --file old.json.gz  # convert a v1 nodes+edges backup into pages
 ```
+
+Output is styled only when stdout is a terminal; piped output (agents,
+scripts) is plain text exactly as before, and `-json` / `-plain` force
+machine-readable or unstyled output on any command.
+
 
 ## Configuration
 

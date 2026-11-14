@@ -110,10 +110,11 @@ trash. Auth: Basic.
 ## 5. CLI
 
 ```
+mem                               # interactive TUI (terminal only)
 mem server                        # HTTP service
-mem list                          # pages (title, slug, updated, tags)
-mem show PAGE                     # print the raw page file
-mem search QUERY [-limit N]       # search results (title, slug, excerpt)
+mem list [-json]                  # pages (title, slug, updated, tags)
+mem show PAGE [-plain]            # page; Glamour-rendered markdown on a terminal
+mem search QUERY [-limit N] [-json]
 mem add PAGE TEXT [-source S]     # append a fact line (default source: cli)
 mem organize                      # nightly housekeeping (see §6)
 mem backup --file F [--gzip]      # gzipped tar of the wiki dir
@@ -124,6 +125,23 @@ mem import-legacy --file F        # v1 backup → pages
 
 `add`/`search` accept flags anywhere (arguments are reordered internally;
 Go's flag package otherwise stops at the first positional).
+
+### Output modes
+
+Output depends on context, in priority order:
+
+1. `-json` — machine-readable JSON, always unstyled (agents/pipes).
+2. `-plain` — plain text even on a terminal.
+3. Terminal (stdout is a TTY) — styled rendering: Lip Gloss table for
+   `list`, Glamour markdown for `show`, colored hits for `search`.
+4. Pipe (default for scripts/agents) — plain text, unchanged from v2.0
+   pre-ricing behavior; scripts written against earlier output keep working.
+
+The TUI (bare `mem` on a terminal) is browse-only plus page creation:
+bubbles/list sidebar with live FTS search (`/`), Glamour preview and
+scrollable reader (enter), page creation (`n`), index resync (`r`),
+quit (`q`). It uses the same index as the CLI/server; nothing else.
+
 
 ## 6. Organizer
 

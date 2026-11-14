@@ -185,7 +185,7 @@ func flagsFirst(args []string) []string {
 		if strings.HasPrefix(args[i], "-") && len(args[i]) > 1 {
 			flags = append(flags, args[i])
 			switch args[i] {
-			case "-gzip", "-h", "-help", "-help=true":
+			case "-gzip", "-h", "-help", "-json", "-plain", "-help=true":
 				// boolean flags take no value
 			default:
 				if i+1 < len(args) {
@@ -203,7 +203,11 @@ func flagsFirst(args []string) []string {
 func main() {
 	osArgs := os.Args[1:]
 	if len(osArgs) == 0 {
-		osArgs = []string{"help"}
+		if stdoutTTY() {
+			osArgs = []string{"tui"}
+		} else {
+			osArgs = []string{"help"}
+		}
 	}
 	cmd := osArgs[0]
 	rest := osArgs[1:]
@@ -218,6 +222,8 @@ func main() {
 	var useGzip bool
 	var searchLimit int
 	var cliSource string
+	var asJSON bool
+	var plain bool
 
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.BoolVar(&showHelp, "help", false, "show help")
@@ -228,6 +234,8 @@ func main() {
 	fs.BoolVar(&useGzip, "gzip", false, "use gzip compression for backup")
 	fs.IntVar(&searchLimit, "limit", 10, "max results for search")
 	fs.StringVar(&cliSource, "source", "cli", "writer label recorded by mem add")
+	fs.BoolVar(&asJSON, "json", false, "machine-readable JSON output")
+	fs.BoolVar(&plain, "plain", false, "plain text output even on a terminal")
 	if err := fs.Parse(rest); err != nil {
 		fmt.Println(err)
 		return
@@ -237,10 +245,11 @@ func main() {
 		fmt.Print(`mem - Wiki Memory Service (v2)
 
 Usage:
+  mem                           Interactive TUI (terminal only)
   mem server                    Start the HTTP server
-  mem list                      List wiki pages (title, tags, updated)
-  mem show PAGE                 Print a page (title or slug)
-  mem search QUERY [-limit N]   Search the wiki
+  mem list [-json]              List wiki pages
+  mem show PAGE [-plain]        View a page (Glamour-rendered on a terminal)
+  mem search QUERY [-limit N] [-json]   Search the wiki
   mem add PAGE TEXT [-source S] Append a fact line to a page
   mem organize                  Nightly housekeeping (dedupe, trash rotation)
   mem backup --file FILE        Backup the wiki (gzipped tar; use - for stdout)
@@ -248,6 +257,8 @@ Usage:
   mem reindex                   Rebuild the search index from the page files
   mem import-legacy --file F    Convert an old mem backup (nodes/edges) into pages
   mem help                      Show this help
+
+Output is styled on terminals and plain when piped; -json / -plain force it.
 
 The wiki is markdown files in MEM_WIKI_DIR (default ~/mem-wiki). The SQLite
 search index (.mem-index.db) is derived state and always rebuildable.
@@ -272,6 +283,11 @@ Examples:
 	}
 
 	switch cmd {
+	case "tui":
+		if err := runTUI(); err != nil {
+			log.Fatal(err)
+		}
+		return
 	case "server":
 		if err := runServer(); err != nil {
 			log.Fatal(err)
@@ -311,6 +327,14 @@ Examples:
 		if err != nil {
 			log.Fatal(err)
 		}
+		if asJSON {
+			printJSON(map[string]interface{}{"pages": pages, "count": len(pages)})
+			return
+		}
+		if stdoutTTY() && !plain {
+			fmt.Println(renderPagesTTY(pages))
+			return
+		}
 		for _, p := range pages {
 			fmt.Printf("%-40s %-18s %s  [%s]\n", p.Title, p.Slug, strings.TrimSpace(p.UpdatedAt[:10]), strings.Join(p.Tags, ","))
 		}
@@ -333,6 +357,12 @@ Examples:
 			fmt.Printf("page not found: %s\n", name)
 			os.Exit(1)
 		}
+		if stdoutTTY() && !plain {
+			if rendered, rerr := renderMarkdownTTY(p.Body); rerr == nil {
+				fmt.Print(rendered)
+				return
+			}
+		}
 		out, _ := os.ReadFile(pageFile(p.Slug))
 		os.Stdout.Write(out)
 		return
@@ -347,6 +377,14 @@ Examples:
 		}
 		defer closeIndex()
 		hits := searchWiki(query, searchLimit)
+		if asJSON {
+			printJSON(map[string]interface{}{"query": query, "results": hits, "count": len(hits)})
+			return
+		}
+		if stdoutTTY() && !plain {
+			fmt.Println(renderSearchTTY(hits, query))
+			return
+		}
 		for _, h := range hits {
 			fmt.Printf("## %s (%s)\n%s\n\n", h.Title, h.Slug, h.Excerpt)
 		}
@@ -366,7 +404,11 @@ Examples:
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("appended to %q (page %s, %s)\n", p.Title, p.Slug, map[bool]string{true: "created", false: "updated"}[created])
+		verb := "updated"
+		if created {
+			verb = "created"
+		}
+		fmt.Println(okLine(fmt.Sprintf("appended to %q (page %s, %s)", p.Title, p.Slug, verb)))
 		return
 	case "organize":
 		res, err := runOrganizer()
@@ -375,7 +417,7 @@ Examples:
 		}
 		organizeLog(res)
 		closeIndex()
-		fmt.Println(formatOrganizeResult(res))
+		fmt.Println(okLine("organize run — " + formatOrganizeResult(res)))
 		return
 	case "import-legacy":
 		if err := runImportLegacy(fileFlag); err != nil {
