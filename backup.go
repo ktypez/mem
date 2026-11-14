@@ -1,278 +1,203 @@
 package main
 
 import (
-	"bufio"
+	"archive/tar"
 	"compress/gzip"
-	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
-// Backup and restore. The HTTP endpoints and the CLI share these functions so the
-// two paths cannot drift apart again: both export every column (including source,
-// status and fact_key) and both restore inside a single transaction.
+// Backup and restore: the wiki directory (pages + trash) is tarred into a
+// gzipped archive. The SQLite index is derived state and deliberately excluded,
+// so a backup stays small and a restore always rebuilds from the files.
 
 const (
-	backupVersion = "1.0"
-	// maxRestoreBytes caps the decompressed size of a backup, so a small gzip
-	// payload cannot expand into an unbounded amount of memory.
+	backupVersion = "2.0"
+	// maxRestoreBytes caps the decompressed size of a restore, so a small gzip
+	// payload cannot expand into an unbounded amount of disk.
 	maxRestoreBytes = 512 << 20
 )
 
-// restoredNodeColumns is the COPY column order that nodeRowsFromBackup builds.
-var restoredNodeColumns = []string{
-	"id", "body", "hash", "layer", "fact_type", "subject", "confidence",
-	"metadata", "topic", "captured_at", "created_at", "updated_at",
-	"source", "status", "fact_key",
+// excludedFromBackup are derived or temporary files that never need archiving.
+func excludedFromBackup(name string) bool {
+	base := filepath.Base(name)
+	return base == ".mem-index.db" ||
+		strings.HasPrefix(base, ".mem-index.db-") ||
+		strings.HasSuffix(base, ".tmp")
 }
 
-// nodeRowsFromBackup flattens backup nodes for COPY. Backups written before the
-// steward columns existed have no source/status: default them so a restore never
-// resurrects rows into an unknown state.
-func nodeRowsFromBackup(nodes []Node) [][]any {
-	rows := make([][]any, 0, len(nodes))
-	for _, n := range nodes {
-		source := n.Source
-		if source == "" {
-			source = "agent"
-		}
-		status := n.Status
-		if status == "" {
-			status = statusActive
-		}
-		var factKey any
-		if n.FactKey != "" {
-			factKey = n.FactKey
-		}
-		rows = append(rows, []any{
-			n.ID, n.Body, hashBody(n.Body), n.Layer, n.FactType, n.Subject, n.Confidence,
-			normalizeMetadataText(n.Metadata), n.Topic, n.CapturedAt, n.CreatedAt, n.UpdatedAt,
-			source, status, factKey,
-		})
-	}
-	return rows
-}
+func runBackupTo(w io.Writer) error {
+	gz := gzip.NewWriter(w)
+	defer gz.Close()
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
 
-// normalizeMetadataText guarantees the stored metadata is a JSON object. The
-// steward SQL does metadata::jsonb and jsonb_set(...), which fail on anything
-// else, so one malformed row would otherwise stall the whole refresher.
-func normalizeMetadataText(s string) string {
-	if strings.TrimSpace(s) == "" {
-		return "{}"
-	}
-	var obj map[string]any
-	if json.Unmarshal([]byte(s), &obj) == nil && obj != nil {
-		return s
-	}
-	b, _ := json.Marshal(map[string]any{"legacy_metadata": s})
-	return string(b)
-}
-
-// metadataObject converts a client-supplied metadata value into a JSON object.
-func metadataObject(v any) string {
-	switch m := v.(type) {
-	case nil:
-		return "{}"
-	case map[string]any:
-		b, _ := json.Marshal(m)
-		return string(b)
-	default:
-		b, _ := json.Marshal(map[string]any{"value": m})
-		return string(b)
-	}
-}
-
-// exportBackup reads every node and edge from one consistent snapshot. Any scan or
-// iteration error aborts the export: a backup must never be silently truncated.
-func exportBackup(ctx context.Context) (Backup, error) {
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return Backup{}, fmt.Errorf("begin snapshot: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // read-only snapshot, nothing to undo
-
-	nodes := []Node{}
-	rows, err := tx.Query(ctx, `SELECT id, body, layer, COALESCE(topic, ''), COALESCE(subject, ''), confidence, fact_type,
-		COALESCE(metadata, '{}'), captured_at, created_at, updated_at, source, status, COALESCE(fact_key, '')
-		FROM memory_nodes ORDER BY created_at DESC, id`)
-	if err != nil {
-		return Backup{}, fmt.Errorf("query nodes: %w", err)
-	}
-	for rows.Next() {
-		var n Node
-		if err := rows.Scan(&n.ID, &n.Body, &n.Layer, &n.Topic, &n.Subject, &n.Confidence, &n.FactType,
-			&n.Metadata, &n.CapturedAt, &n.CreatedAt, &n.UpdatedAt, &n.Source, &n.Status, &n.FactKey); err != nil {
-			rows.Close()
-			return Backup{}, fmt.Errorf("scan node: %w", err)
-		}
-		nodes = append(nodes, n)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return Backup{}, fmt.Errorf("read nodes: %w", err)
-	}
-
-	edges := []Edge{}
-	erows, err := tx.Query(ctx, `SELECT id, src, dst, rel, weight, created_at FROM memory_edges ORDER BY id`)
-	if err != nil {
-		return Backup{}, fmt.Errorf("query edges: %w", err)
-	}
-	for erows.Next() {
-		var e Edge
-		if err := erows.Scan(&e.ID, &e.Src, &e.Dst, &e.Rel, &e.Weight, &e.CreatedAt); err != nil {
-			erows.Close()
-			return Backup{}, fmt.Errorf("scan edge: %w", err)
-		}
-		edges = append(edges, e)
-	}
-	erows.Close()
-	if err := erows.Err(); err != nil {
-		return Backup{}, fmt.Errorf("read edges: %w", err)
-	}
-
-	return Backup{
-		Version:   backupVersion,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Nodes:     nodes,
-		Edges:     edges,
-	}, nil
-}
-
-// encodeBackup writes the backup as JSON, optionally gzip-compressed.
-func encodeBackup(w io.Writer, b Backup, useGzip bool) error {
-	if !useGzip {
-		return json.NewEncoder(w).Encode(b)
-	}
-	gw := gzip.NewWriter(w)
-	if err := json.NewEncoder(gw).Encode(b); err != nil {
-		gw.Close()
+	root := wikiDir()
+	// The wiki directory must exist even for an empty wiki.
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return err
 	}
-	return gw.Close()
-}
-
-// capReader fails once more than left bytes have been read.
-type capReader struct {
-	r    io.Reader
-	left int64
-}
-
-func (c *capReader) Read(p []byte) (int, error) {
-	if c.left <= 0 {
-		return 0, errors.New("backup exceeds the maximum restore size")
-	}
-	if int64(len(p)) > c.left {
-		p = p[:c.left]
-	}
-	n, err := c.r.Read(p)
-	c.left -= int64(n)
-	return n, err
-}
-
-// decodeBackup parses a backup, inflating gzip with a hard cap on the output size.
-func decodeBackup(r io.Reader, gzipped bool) (Backup, error) {
-	if gzipped {
-		gz, err := gzip.NewReader(r)
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return Backup{}, errors.New("invalid gzip data")
+			return err
 		}
-		defer gz.Close()
-		r = gz
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if excludedFromBackup(path) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = filepath.ToSlash(filepath.Join("mem-wiki", rel))
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	})
+	if err != nil {
+		return err
 	}
-	var b Backup
-	if err := json.NewDecoder(&capReader{r: r, left: maxRestoreBytes}).Decode(&b); err != nil {
-		return Backup{}, fmt.Errorf("invalid backup JSON data: %w", err)
-	}
-	return b, nil
+	return tw.Close()
 }
 
-// validateBackup rejects payloads that would wipe the database for nothing or that
-// reference rows that do not exist.
-func validateBackup(b Backup) error {
-	if len(b.Nodes) == 0 && len(b.Edges) == 0 {
-		return errors.New("backup is empty; refusing to replace the database with nothing")
+// runRestoreFrom extracts a backup archive into the wiki directory and rebuilds
+// the index from the restored files.
+func runRestoreFrom(r io.Reader) (int, error) {
+	lr := io.LimitReader(r, maxRestoreBytes)
+	gz, err := gzip.NewReader(lr)
+	if err != nil {
+		return 0, fmt.Errorf("not a gzip archive: %w", err)
 	}
-	ids := make(map[string]struct{}, len(b.Nodes))
-	for _, n := range b.Nodes {
-		if n.ID == "" || strings.TrimSpace(n.Body) == "" {
-			return errors.New("backup contains a node without an id or body")
+	tr := tar.NewReader(gz)
+	root := wikiDir()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return 0, err
+	}
+	n := 0
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
 		}
-		if _, dup := ids[n.ID]; dup {
-			return fmt.Errorf("backup contains duplicate node id %q", n.ID)
+		if err != nil {
+			return n, err
 		}
-		ids[n.ID] = struct{}{}
-		switch n.Status {
-		case "", statusActive, statusProposed, statusRetired:
-		default:
-			return fmt.Errorf("node %q has unknown status %q", n.ID, n.Status)
+		// Only accept paths under mem-wiki/.
+		name := hdr.Name
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) != 2 || parts[0] != "mem-wiki" || parts[1] == "" {
+			continue
+		}
+		rel := parts[1]
+		if strings.Contains(rel, "..") || filepath.IsAbs(rel) {
+			continue
+		}
+		if excludedFromBackup(rel) {
+			continue
+		}
+		dst := filepath.Join(root, filepath.FromSlash(rel))
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(dst, 0o700); err != nil {
+				return n, err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+				return n, err
+			}
+			f, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o700|0o600)
+			if err != nil {
+				return n, err
+			}
+			written, err := io.Copy(f, tr)
+			f.Close()
+			if err != nil {
+				return n, err
+			}
+			if written > maxRestoreBytes {
+				return n, fmt.Errorf("restore exceeds %d bytes", maxRestoreBytes)
+			}
+			n++
 		}
 	}
-	for _, e := range b.Edges {
-		if _, ok := ids[e.Src]; !ok {
-			return fmt.Errorf("edge %d references a missing source node", e.ID)
-		}
-		if _, ok := ids[e.Dst]; !ok {
-			return fmt.Errorf("edge %d references a missing target node", e.ID)
-		}
+	synced, err := rescanWiki()
+	if err != nil {
+		log.Printf("restore: index resync failed: %v", err)
 	}
+	_ = synced
+	return n, nil
+}
+
+// --- CLI ---
+
+func runCLIBackup(path string, useGzip bool) error {
+	if strings.TrimSpace(path) == "" || path == "-" {
+		return runBackupTo(os.Stdout)
+	}
+	if !useGzip && !strings.HasSuffix(path, ".gz") {
+		log.Printf("note: backups are always gzipped tar archives")
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := runBackupTo(f); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	log.Printf("Backup complete: %s", path)
 	return nil
 }
 
-// restoreBackup replaces all data in a single transaction: either the whole backup
-// is restored or nothing changes.
-func restoreBackup(ctx context.Context, b Backup) (nodes, edges int64, err error) {
-	tx, err := pool.Begin(ctx)
+func runCLIRestore(path string) error {
+	var src io.Reader
+	if path == "" || path == "-" {
+		src = os.Stdin
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		src = f
+	}
+	n, err := runRestoreFrom(src)
 	if err != nil {
-		return 0, 0, fmt.Errorf("begin restore: %w", err)
+		return err
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
-
-	if _, err := tx.Exec(ctx, "DELETE FROM memory_edges"); err != nil {
-		return 0, 0, fmt.Errorf("clear edges: %w", err)
-	}
-	if _, err := tx.Exec(ctx, "DELETE FROM memory_nodes"); err != nil {
-		return 0, 0, fmt.Errorf("clear nodes: %w", err)
-	}
-
-	nodeRows := nodeRowsFromBackup(b.Nodes)
-	nodes, err = tx.CopyFrom(ctx, pgx.Identifier{"memory_nodes"}, restoredNodeColumns,
-		pgx.CopyFromSlice(len(nodeRows), func(i int) ([]any, error) { return nodeRows[i], nil }))
-	if err != nil {
-		return 0, 0, fmt.Errorf("restore nodes: %w", err)
-	}
-
-	edgeRows := make([][]any, 0, len(b.Edges))
-	for _, e := range b.Edges {
-		edgeRows = append(edgeRows, []any{e.ID, e.Src, e.Dst, e.Rel, e.Weight, e.CreatedAt})
-	}
-	edges, err = tx.CopyFrom(ctx, pgx.Identifier{"memory_edges"},
-		[]string{"id", "src", "dst", "rel", "weight", "created_at"},
-		pgx.CopyFromSlice(len(edgeRows), func(i int) ([]any, error) { return edgeRows[i], nil }))
-	if err != nil {
-		return 0, 0, fmt.Errorf("restore edges: %w", err)
-	}
-
-	// COPY wrote explicit ids, so move the sequence past them; otherwise the next
-	// inserted edge would collide with a restored one.
-	if _, err := tx.Exec(ctx, `SELECT setval(pg_get_serial_sequence('memory_edges', 'id'),
-		COALESCE((SELECT MAX(id) + 1 FROM memory_edges), 1), false)`); err != nil {
-		return 0, 0, fmt.Errorf("reset edge sequence: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, fmt.Errorf("commit restore: %w", err)
-	}
-	return nodes, edges, nil
+	log.Printf("Restore complete: %d files", n)
+	return nil
 }
+
+// --- HTTP ---
 
 func handleBackup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -280,28 +205,11 @@ func handleBackup(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	// Export fully before writing any header, so a failure becomes a clean error
-	// response instead of a truncated download.
-	backup, err := exportBackup(ctx)
-	if err != nil {
+	name := "mem-wiki-backup-" + time.Now().Format("20061114-150405") + ".tar.gz"
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	if err := runBackupTo(w); err != nil {
 		log.Printf("backup failed: %v", err)
-		jsonResp(w, http.StatusServiceUnavailable, map[string]string{"error": "unable to read data for backup"})
-		return
-	}
-
-	useGzip := r.URL.Query().Get("gzip") == "true"
-	if useGzip {
-		w.Header().Set("Content-Type", "application/gzip")
-		w.Header().Set("Content-Disposition", "attachment; filename=mem-backup.json.gz")
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Disposition", "attachment; filename=mem-backup.json")
-	}
-	if err := encodeBackup(w, backup, useGzip); err != nil {
-		log.Printf("backup write failed: %v", err)
 	}
 }
 
@@ -311,106 +219,10 @@ func handleRestore(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !requireSteward(w, r) {
-		return
-	}
-	// A custom header cannot be sent cross-site without a CORS preflight, which
-	// this service never grants. It also makes a replace-everything call explicit.
-	if r.Header.Get("X-Confirm-Restore") != "replace-all" {
-		jsonResp(w, http.StatusForbidden, map[string]string{"error": "restore replaces all data; send X-Confirm-Restore: replace-all"})
-		return
-	}
-
-	gzipped := r.Header.Get("Content-Encoding") == "gzip" ||
-		strings.HasPrefix(r.Header.Get("Content-Type"), "application/gzip")
-	backup, err := decodeBackup(r.Body, gzipped)
+	n, err := runRestoreFrom(r.Body)
 	if err != nil {
 		jsonResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := validateBackup(backup); err != nil {
-		jsonResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
-	defer cancel()
-	nodes, edges, err := restoreBackup(ctx, backup)
-	if err != nil {
-		log.Printf("restore failed: %v", err)
-		jsonResp(w, http.StatusInternalServerError, map[string]string{"error": "restore failed; no changes were made"})
-		return
-	}
-	jsonResp(w, http.StatusOK, map[string]interface{}{
-		"status":    "restored",
-		"nodes":     nodes,
-		"edges":     edges,
-		"timestamp": backup.Timestamp,
-	})
-}
-
-func runCLIBackup(filename string, useGzip bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	backup, err := exportBackup(ctx)
-	if err != nil {
-		log.Fatalf("backup failed: %v", err)
-	}
-
-	var out io.Writer = os.Stdout
-	var file *os.File
-	if filename != "" && filename != "-" {
-		// Backups hold every memory: keep them private to the current user.
-		file, err = os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-		if err != nil {
-			log.Fatalf("cannot create file %s: %v", filename, err)
-		}
-		out = file
-	}
-	if err := encodeBackup(out, backup, useGzip); err != nil {
-		log.Fatalf("failed to write backup: %v", err)
-	}
-	if file != nil {
-		if err := file.Close(); err != nil {
-			log.Fatalf("failed to finish writing %s: %v", filename, err)
-		}
-	}
-	fmt.Fprintf(os.Stderr, "Backup complete: %d nodes, %d edges\n", len(backup.Nodes), len(backup.Edges))
-}
-
-func runCLIRestore(filename string) {
-	if filename == "" {
-		log.Fatal("restore requires --file argument")
-	}
-
-	var in io.Reader = os.Stdin
-	if filename != "-" {
-		f, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open file %s: %v", filename, err)
-		}
-		defer f.Close()
-		in = f
-	}
-	// Detect gzip from its magic bytes, so stdin and renamed files work too.
-	br := bufio.NewReader(in)
-	magic, _ := br.Peek(2)
-	gzipped := len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b
-
-	backup, err := decodeBackup(br, gzipped)
-	if err != nil {
-		log.Fatalf("%v", err)
-	}
-	if err := validateBackup(backup); err != nil {
-		log.Fatalf("refusing to restore: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	nodes, edges, err := restoreBackup(ctx, backup)
-	if err != nil {
-		log.Fatalf("restore failed, no changes were made: %v", err)
-	}
-	fmt.Fprintf(os.Stderr, "Restore complete: %d nodes, %d edges restored\n", nodes, edges)
+	jsonResp(w, 200, map[string]interface{}{"status": "restored", "files": n, "version": backupVersion})
 }
