@@ -107,6 +107,19 @@ Single page at `/` (CSP with per-response nonce, no external assets):
 page list, full-text search, read (minimal markdown render), edit, create,
 trash. Auth: Basic.
 
+Layout and styling follow the **V5 "Paper Pop"** design system (shared with
+data.mcky.space / truck / portal): warm paper `#f6f2e9`, card `#fffdf6`, hard
+sticker shadow, and four accent palettes — `matcha` (default), `coral`,
+`blueberry`, `butter` — switchable from the header and persisted in
+`localStorage` (`mem-palette`). Dark mode follows `prefers-color-scheme`.
+
+Mobile-first: at ≤760px the sidebar becomes an off-canvas drawer behind the
+hamburger button (with a scrim), the header search wraps to its own row, and
+all controls keep ≥42px touch targets. At >760px the sidebar is fixed beside
+the content pane. Fonts are Sora + JetBrains Mono with an automatic
+Noto Sans Thai fallback (no webfont download — self-hosted assets are not
+shipped, so the system stack resolves).
+
 ## 5. CLI
 
 ```
