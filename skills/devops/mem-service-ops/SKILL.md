@@ -22,13 +22,15 @@ mem is a wiki memory service: markdown pages on disk (`MEM_WIKI_DIR`, default
 
 ```sh
 cd /home/admin/projects/mem
-go test ./... && go build -o mem .
+go test ./... && CGO_ENABLED=0 go build -trimpath -o mem .
+sudo install -m 0755 -o root -g root mem /usr/local/bin/mem
 sudo systemctl restart memory.service
 curl -s http://127.0.0.1:3200/health        # {"mode":"wiki",...}
 ```
 
-Unit: `memory.service` (env `/etc/mem/mem.env`). LAN entry:
-`mem-lan.socket` (socket-activated proxy to loopback).
+The service runs `/usr/local/bin/mem server` (static binary); the repo is
+only the build source. Unit: `memory.service` (env `/etc/mem/mem.env`).
+LAN entry: `mem-lan.socket` (socket-activated proxy to loopback).
 
 ## Verify
 
@@ -50,7 +52,8 @@ mem reindex                                 # rebuild index from files
 
 ## Gotchas
 
-- `salt`, `mem`, `pi-bolt` live in `~/.local/bin` — use full paths or export PATH.
+- `salt` and `pi-bolt` live in `~/.local/bin` (not on default non-login PATH);
+  `mem` is at `/usr/local/bin/mem`. Use full paths or export PATH.
 - Index `.mem-index.db*` is derived: never back it up, always `mem reindex` after
   bulk hand edits.
 - Legacy v1 (Postgres graph) import: `mem import-legacy --file <old.json.gz>`.

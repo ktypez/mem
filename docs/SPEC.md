@@ -171,9 +171,11 @@ quit (`q`). It uses the same index as the CLI/server; nothing else.
 | `MEM_ALLOW_UNAUTHENTICATED` | — | `true` allows credential-less loopback runs |
 | `MEM_TRASH_DAYS` | `30` | organizer trash retention |
 
-Deployment on the lab host: systemd `memory.service`
-(`/home/admin/projects/mem/mem server`, env `/etc/mem/mem.env`) and
-`mem-lan.socket` (LAN `192.168.1.47:3200` → socket-proxy → loopback).
+Deployment on the lab host: the release binary is installed to
+`/usr/local/bin/mem` (static, `CGO_ENABLED=0`); systemd `memory.service`
+runs `ExecStart=/usr/local/bin/mem server` with env `/etc/mem/mem.env`,
+alongside `mem-lan.socket` (LAN `192.168.1.47:3200` → socket-proxy →
+loopback). The repo is the build source, not the running path.
 
 ## 8. Clients
 
