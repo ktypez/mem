@@ -161,6 +161,24 @@ func handleWikiPage(w http.ResponseWriter, r *http.Request) {
 			jsonResp(w, 404, map[string]string{"error": "page not found"})
 			return
 		}
+		// format=text returns the page as plain markdown: what a file-reading
+		// agent wants, without unwrapping JSON.
+		if strings.EqualFold(r.URL.Query().Get("format"), "text") {
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			body := strings.TrimSpace(p.Body)
+			if p.Title != "" {
+				fmt.Fprintf(w, "# %s\n\n", p.Title)
+			}
+			if len(p.Tags) > 0 {
+				fmt.Fprintf(w, "_tags: %s", strings.Join(p.Tags, ", "))
+				if d := briefDate(p.UpdatedAt); d != "" {
+					fmt.Fprintf(w, " · updated %s", d)
+				}
+				fmt.Fprint(w, "_\n\n")
+			}
+			fmt.Fprintln(w, body)
+			return
+		}
 		jsonResp(w, 200, p)
 
 	case http.MethodPut:
@@ -426,8 +444,75 @@ func handleExtract(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// pageBrief is one row of the brief index: enough for a client to decide
+// whether a page is worth opening, without shipping whole bodies.
+type pageBrief struct {
+	Title     string   `json:"title"`
+	Slug      string   `json:"slug"`
+	Tags      []string `json:"tags"`
+	UpdatedAt string   `json:"updated_at"`
+	UpdatedBy string   `json:"updated_by"`
+	Preview   string   `json:"preview"`
+}
+
+// briefLine renders one brief row as a single compact line (format=text).
+func briefLine(p pageBrief) string {
+	var b strings.Builder
+	b.WriteString("- ")
+	b.WriteString(p.Slug)
+	if t := strings.TrimSpace(p.Title); t != "" && !strings.EqualFold(t, p.Slug) {
+		b.WriteString(" — ")
+		b.WriteString(t)
+	}
+	if len(p.Tags) > 0 {
+		b.WriteString(" [")
+		b.WriteString(strings.Join(p.Tags, ","))
+		b.WriteString("]")
+	}
+	if d := briefDate(p.UpdatedAt); d != "" {
+		b.WriteString(" · ")
+		b.WriteString(d)
+	}
+	if pv := briefPreview(p.Preview, 120); pv != "" {
+		b.WriteString(" · ")
+		b.WriteString(pv)
+	}
+	return b.String()
+}
+
+// briefDate trims a timestamp to its date, tolerating unknown layouts.
+func briefDate(ts string) string {
+	if ts == "" {
+		return ""
+	}
+	if t, err := time.Parse(time.RFC3339, ts); err == nil {
+		return t.Format("2006-01-02")
+	}
+	if len(ts) >= 10 {
+		return ts[:10]
+	}
+	return ts
+}
+
+// briefPreview flattens a preview to one line of at most width runes.
+func briefPreview(s string, width int) string {
+	clean := strings.Join(strings.Fields(s), " ")
+	clean = strings.TrimSpace(strings.TrimPrefix(clean, "## Facts"))
+	clean = strings.TrimSpace(strings.TrimPrefix(clean, "-"))
+	clean = strings.TrimSpace(clean)
+	if clean == "" {
+		return ""
+	}
+	runes := []rune(clean)
+	if len(runes) > width {
+		return strings.TrimSpace(string(runes[:width])) + "…"
+	}
+	return clean
+}
+
 // handleBrief returns a one-screen summary: the most recently updated pages
-// with their first lines. It replaces the old system-facts brief.
+// with their first lines. `format=text` renders one compact line per page for
+// agents (cheap to inject at session start); the JSON shape is unchanged.
 func handleBrief(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -443,14 +528,6 @@ func handleBrief(w http.ResponseWriter, r *http.Request) {
 	if l := r.URL.Query().Get("limit"); l != "" {
 		fmt.Sscanf(l, "%d", &limit)
 	}
-	type pageBrief struct {
-		Title     string   `json:"title"`
-		Slug      string   `json:"slug"`
-		Tags      []string `json:"tags"`
-		UpdatedAt string   `json:"updated_at"`
-		UpdatedBy string   `json:"updated_by"`
-		Preview   string   `json:"preview"`
-	}
 	out := make([]pageBrief, 0, len(pages))
 	for i, p := range pages {
 		if i >= limit {
@@ -461,6 +538,14 @@ func handleBrief(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: p.UpdatedAt, UpdatedBy: p.UpdatedBy,
 			Preview: excerpt(p.Body, "", 200),
 		})
+	}
+	if strings.EqualFold(r.URL.Query().Get("format"), "text") {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, "mem index: %d of %d pages (most recently updated)\n", len(out), len(pages))
+		for _, p := range out {
+			fmt.Fprintln(w, briefLine(p))
+		}
+		return
 	}
 	jsonResp(w, 200, map[string]interface{}{"pages": out, "count": len(out), "total": len(pages)})
 }

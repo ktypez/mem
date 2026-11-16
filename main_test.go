@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,83 @@ func testWiki(t *testing.T) {
 		t.Fatalf("openIndex: %v", err)
 	}
 	t.Cleanup(closeIndex)
+}
+
+func TestBriefTextFormat(t *testing.T) {
+	testWiki(t)
+	if _, err := upsertPage("billing", "Billing", "## Facts\n- invoice sent monthly — agent, 2026-11-14\n", []string{"ops"}, "agent"); err != nil {
+		t.Fatalf("upsertPage: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handleBrief(rec, httptest.NewRequest(http.MethodGet, "/v1/memory/brief?format=text&limit=5", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type = %q, want text/plain", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "mem index: 1 of 1 pages") {
+		t.Fatalf("missing header line, got:\n%s", body)
+	}
+	if !strings.Contains(body, "- billing") || !strings.Contains(body, "[ops]") {
+		t.Fatalf("missing page line, got:\n%s", body)
+	}
+	if strings.Contains(body, "## Facts") {
+		t.Fatalf("preview kept the Facts heading:\n%s", body)
+	}
+	if strings.Contains(body, "{\"pages\"") {
+		t.Fatalf("text format leaked JSON:\n%s", body)
+	}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines (header + 1 page), got %d:\n%s", len(lines), body)
+	}
+
+	// The JSON shape stays the default for existing clients.
+	rec = httptest.NewRecorder()
+	handleBrief(rec, httptest.NewRequest(http.MethodGet, "/v1/memory/brief?limit=5", nil))
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "json") {
+		t.Fatalf("default content-type = %q, want JSON", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "\"pages\"") {
+		t.Fatalf("default body is not JSON: %s", rec.Body.String())
+	}
+}
+
+func TestWikiPageTextFormat(t *testing.T) {
+	testWiki(t)
+	if _, err := upsertPage("billing", "Billing", "## Facts\n- invoice sent monthly\n", []string{"ops"}, "agent"); err != nil {
+		t.Fatalf("upsertPage: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/wiki/pages/billing?format=text", nil)
+	rec := httptest.NewRecorder()
+	handleWikiPage(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
+		t.Fatalf("content-type = %q, want text/markdown", ct)
+	}
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, "# Billing") {
+		t.Fatalf("missing title heading:\n%s", body)
+	}
+	if !strings.Contains(body, "invoice sent monthly") || !strings.Contains(body, "tags: ops") {
+		t.Fatalf("missing body/tags:\n%s", body)
+	}
+	if strings.HasPrefix(strings.TrimSpace(body), "{") {
+		t.Fatalf("text format leaked JSON:\n%s", body)
+	}
+
+	// Default stays JSON.
+	rec = httptest.NewRecorder()
+	handleWikiPage(rec, httptest.NewRequest(http.MethodGet, "/v1/wiki/pages/billing", nil))
+	if !strings.Contains(rec.Header().Get("Content-Type"), "json") {
+		t.Fatalf("default content-type = %q, want JSON", rec.Header().Get("Content-Type"))
+	}
 }
 
 func TestSlugify(t *testing.T) {
