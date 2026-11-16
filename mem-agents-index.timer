@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep the shared mem index in the agents instruction file fresh
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=mem-agents-index.service
+
+[Install]
+WantedBy=timers.target

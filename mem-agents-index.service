@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh the shared mem index block in the agents instruction file
+
+[Service]
+Type=oneshot
+# Writes the managed <!-- mem-index --> block inside ~/AGENTS.md so agent
+# runtimes without a memory hook (opencode, pi, pi-bolt) see what the store
+# holds. A failed fetch leaves the file untouched.
+ExecStart=%h/.local/bin/mem-agents-index.py --limit 10

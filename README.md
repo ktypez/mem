@@ -40,6 +40,30 @@ Compatibility API (existing clients keep working):
 - `GET /v1/memory/backup`, `POST /v1/memory/restore` — gzipped tar archive
 - `POST /v1/memory/nodes/{id}/promote|reject` — accepted, answers `noop`
 
+Add `format=text` to `brief`, `search`, `stats` and `/v1/wiki/pages/{slug}` for a
+token-cheap plain-text shape: `brief` and `search` print one compact line per
+page/hit under a header line (`mem index: N of M pages`, `mem search: N hit(s)`),
+`stats` prints a single summary line, and a page renders as markdown. JSON stays
+the default, so existing clients are unaffected.
+
+`scripts/mem-agents-index.py` writes that same index into a managed block
+(`<!-- mem-index:start -->` … `<!-- mem-index:end -->`) of a shared instruction
+file — by default `~/AGENTS.md` — so agent runtimes without a memory hook
+(opencode, pi, pi-bolt) start a session knowing what the store holds. It is
+idempotent, replaces the file atomically, and leaves it untouched when the
+service is unreachable. Pair it with the units `mem-agents-index.service` and
+`mem-agents-index.timer` (user units, every 10 minutes):
+
+```
+install -m 0755 scripts/mem-agents-index.py ~/.local/bin/
+install -m 0644 mem-agents-index.service mem-agents-index.timer ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now mem-agents-index.timer
+```
+
+`scripts/mem-mcp.py` is the stdio MCP bridge used by those runtimes; install the
+copy where the runtime spawns it (`~/.local/bin/mem-mcp.py`) and keep it in sync
+with the repository copy.
+
 The web UI at `/` is a single page in the shared V5 "paper pop" skin: search,
 read, edit, create, trash, with the page list in a drawer on a phone. No
 external assets; it works with Basic auth.
