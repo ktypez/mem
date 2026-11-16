@@ -241,3 +241,62 @@ func TestMatchQueryQuotes(t *testing.T) {
 		t.Fatalf("unexpected match query: %q", got)
 	}
 }
+
+func TestSearchTextFormat(t *testing.T) {
+	testWiki(t)
+	if _, err := upsertPage("billing", "Billing", "## Facts\n- invoice sent monthly — agent, 2026-11-14\n", []string{"ops"}, "agent"); err != nil {
+		t.Fatalf("upsertPage: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handleSearch(rec, httptest.NewRequest(http.MethodGet, "/v1/memory/search?q=invoice&format=text&limit=5", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type = %q, want text/plain", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `mem search: 1 hit(s) for "invoice"`) {
+		t.Fatalf("missing header line, got:\n%s", body)
+	}
+	if !strings.Contains(body, "- billing") || !strings.Contains(body, "[ops]") {
+		t.Fatalf("missing hit line, got:\n%s", body)
+	}
+	if strings.Contains(body, `"results"`) {
+		t.Fatalf("text format leaked JSON:\n%s", body)
+	}
+
+	// The JSON shape stays the default for existing clients.
+	rec = httptest.NewRecorder()
+	handleSearch(rec, httptest.NewRequest(http.MethodGet, "/v1/memory/search?q=invoice&limit=5", nil))
+	if !strings.Contains(rec.Body.String(), `"results"`) {
+		t.Fatalf("default body is not the JSON shape: %s", rec.Body.String())
+	}
+}
+
+func TestStatsTextFormat(t *testing.T) {
+	testWiki(t)
+	if _, err := upsertPage("billing", "Billing", "## Facts\n- invoice sent monthly — agent, 2026-11-14\n", []string{"ops"}, "agent"); err != nil {
+		t.Fatalf("upsertPage: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handleStats(rec, httptest.NewRequest(http.MethodGet, "/v1/memory/stats?format=text", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type = %q, want text/plain", ct)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "mem stats: 1 pages, 0 edges, status active=1") {
+		t.Fatalf("unexpected stats line: %q", got)
+	}
+
+	// The JSON shape stays the default for existing clients.
+	rec = httptest.NewRecorder()
+	handleStats(rec, httptest.NewRequest(http.MethodGet, "/v1/memory/stats", nil))
+	if !strings.Contains(rec.Body.String(), `"pages"`) {
+		t.Fatalf("default body is not the JSON shape: %s", rec.Body.String())
+	}
+}

@@ -61,6 +61,11 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Compat: older clients read nodes/edges.
+	if strings.EqualFold(r.URL.Query().Get("format"), "text") {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, "mem stats: %d pages, 0 edges, status active=%d\n", len(pages), len(pages))
+		return
+	}
 	jsonResp(w, http.StatusOK, map[string]interface{}{
 		"pages":  len(pages),
 		"nodes":  len(pages),
@@ -244,6 +249,27 @@ func searchResultsNode(h searchHit) map[string]interface{} {
 	}
 }
 
+// searchLine renders one search hit as a single compact line (format=text).
+func searchLine(h searchHit) string {
+	var b strings.Builder
+	b.WriteString("- ")
+	b.WriteString(h.Slug)
+	if t := strings.TrimSpace(h.Title); t != "" && !strings.EqualFold(t, h.Slug) {
+		b.WriteString(" — ")
+		b.WriteString(t)
+	}
+	if len(h.Tags) > 0 {
+		b.WriteString(" [")
+		b.WriteString(strings.Join(h.Tags, ","))
+		b.WriteString("]")
+	}
+	if pv := briefPreview(h.Excerpt, 160); pv != "" {
+		b.WriteString(" · ")
+		b.WriteString(pv)
+	}
+	return b.String()
+}
+
 func handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		w.Header().Set("Allow", "GET, POST")
@@ -271,6 +297,14 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		limit = 10
 	}
 	hits := searchWiki(q, limit)
+	if strings.EqualFold(r.URL.Query().Get("format"), "text") {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, "mem search: %d hit(s) for %q\n", len(hits), q)
+		for _, h := range hits {
+			fmt.Fprintln(w, searchLine(h))
+		}
+		return
+	}
 	results := make([]map[string]interface{}, 0, len(hits))
 	for _, h := range hits {
 		results = append(results, searchResultsNode(h))

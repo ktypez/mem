@@ -124,8 +124,10 @@ TOOLS = [
         "name": "memory_search",
         "description": (
             "Full-text search across all memory pages (substring/trigram, works for "
-            "Thai). Use it before answering questions about this host, the user or "
-            "their projects, after memory_brief or instead of it when the query is specific."
+            "Thai). Returns one compact line per hit (slug, tags, matching text) — "
+            "open a hit with memory_page. Use it before answering questions about "
+            "this host, the user or their projects, after memory_brief or instead "
+            "of it when the query is specific."
         ),
         "inputSchema": {
             "type": "object",
@@ -195,7 +197,8 @@ def run_tool(name: str, args: dict):
     if name == "memory_brief":
         return call("GET", "/v1/memory/brief?format=text&limit=%d" % int(args.get("limit", 10)), raw_text=True)
     if name == "memory_search":
-        return call("POST", "/v1/memory/search", {"query": args["query"], "limit": args.get("limit", 10)})
+        return call("GET", "/v1/memory/search?q=%s&limit=%d&format=text"
+                    % (urllib.parse.quote(args["query"], safe=""), int(args.get("limit", 10))), raw_text=True)
     if name == "memory_page":
         slug = urllib.parse.quote(args["slug"], safe="")
         return call("GET", "/v1/wiki/pages/%s?format=text" % slug, raw_text=True)
@@ -211,7 +214,7 @@ def run_tool(name: str, args: dict):
     if name == "memory_context":
         return call("POST", "/v1/memory/context", {"query": args["query"], "limit": args.get("limit", 5)})
     if name == "memory_stats":
-        return call("GET", "/v1/memory/stats")
+        return call("GET", "/v1/memory/stats?format=text", raw_text=True)
     return {"error": "unknown tool: %s" % name}
 
 
