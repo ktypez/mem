@@ -277,18 +277,19 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query().Get("q")
-	if q == "" && r.Method == http.MethodPost {
-		var data map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&data)
-		q, _ = data["query"].(string)
-	}
 	limit := 10
 	if l := r.URL.Query().Get("limit"); l != "" {
 		fmt.Sscanf(l, "%d", &limit)
 	}
 	if r.Method == http.MethodPost {
 		var data map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&data)
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			jsonResp(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+			return
+		}
+		if q == "" {
+			q, _ = data["query"].(string)
+		}
 		if v, ok := data["limit"].(float64); ok && int(v) > 0 {
 			limit = int(v)
 		}

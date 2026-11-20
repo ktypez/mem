@@ -88,17 +88,27 @@ func runBackupTo(w io.Writer) error {
 // runRestoreFrom extracts a backup archive into the wiki directory and rebuilds
 // the index from the restored files.
 func runRestoreFrom(r io.Reader) (int, error) {
-	lr := io.LimitReader(r, maxRestoreBytes)
-	gz, err := gzip.NewReader(lr)
+	compressed := io.LimitReader(r, maxRestoreBytes)
+	gz, err := gzip.NewReader(compressed)
 	if err != nil {
 		return 0, fmt.Errorf("not a gzip archive: %w", err)
 	}
-	tr := tar.NewReader(gz)
+	defer gz.Close()
+	// Bound the expanded tar stream as well as the compressed input. The extra
+	// byte lets us distinguish an archive at the limit from one that exceeds it.
+	expanded := &io.LimitedReader{R: gz, N: maxRestoreBytes + 1}
+	tr := tar.NewReader(expanded)
 	root := wikiDir()
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return 0, err
 	}
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return 0, err
+	}
+	defer rootFS.Close()
 	n := 0
+	pages := map[string]bool{}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -114,35 +124,79 @@ func runRestoreFrom(r io.Reader) (int, error) {
 			continue
 		}
 		rel := parts[1]
-		if strings.Contains(rel, "..") || filepath.IsAbs(rel) {
+		if !filepath.IsLocal(rel) {
 			continue
 		}
 		if excludedFromBackup(rel) {
 			continue
 		}
-		dst := filepath.Join(root, filepath.FromSlash(rel))
+		dst := filepath.FromSlash(rel)
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(dst, 0o700); err != nil {
+			if err := rootFS.MkdirAll(dst, 0o700); err != nil {
 				return n, err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			if hdr.Size < 0 || hdr.Size > maxRestoreBytes {
+				return n, fmt.Errorf("restore exceeds %d bytes", maxRestoreBytes)
+			}
+			if err := rootFS.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 				return n, err
 			}
-			f, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o700|0o600)
+			f, err := rootFS.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o700|0o600)
 			if err != nil {
 				return n, err
 			}
 			written, err := io.Copy(f, tr)
-			f.Close()
+			closeErr := f.Close()
 			if err != nil {
 				return n, err
+			}
+			if closeErr != nil {
+				return n, closeErr
+			}
+			if written != hdr.Size {
+				return n, fmt.Errorf("truncated archive member %q", hdr.Name)
 			}
 			if written > maxRestoreBytes {
 				return n, fmt.Errorf("restore exceeds %d bytes", maxRestoreBytes)
 			}
+			if !strings.Contains(dst, "/") && strings.HasSuffix(dst, ".md") {
+				pages[dst] = true
+			}
 			n++
+		}
+	}
+	// tar.Reader stops at the end marker; drain gzip to ensure trailing expanded
+	// data cannot bypass the archive-wide size limit.
+	_, err = io.Copy(io.Discard, expanded)
+	if err != nil {
+		return n, err
+	}
+	if expanded.N == 0 {
+		return n, fmt.Errorf("restore exceeds %d bytes", maxRestoreBytes)
+	}
+	// Restore semantics replace top-level pages: remove pages absent from the
+	// archive only after the complete archive has been validated and extracted.
+	dir, err := rootFS.Open(".")
+	if err != nil {
+		return n, err
+	}
+	entries, err := dir.ReadDir(-1)
+	closeErr := dir.Close()
+	if err != nil {
+		return n, err
+	}
+	if closeErr != nil {
+		return n, closeErr
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".md") || pages[name] {
+			continue
+		}
+		if err := rootFS.Remove(name); err != nil && !os.IsNotExist(err) {
+			return n, err
 		}
 	}
 	synced, err := rescanWiki()
