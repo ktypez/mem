@@ -107,18 +107,20 @@ Single page at `/` (CSP with per-response nonce, no external assets):
 page list, full-text search, read (minimal markdown render), edit, create,
 trash. Auth: Basic.
 
-Layout and styling follow the **V5 "Paper Pop"** design system (shared with
-data.mcky.space / truck / portal): warm paper `#f6f2e9`, card `#fffdf6`, hard
-sticker shadow, and four accent palettes — `matcha` (default), `coral`,
-`blueberry`, `butter` — switchable from the header and persisted in
+Layout and styling follow the **MCKY UI V6 "Work Shell"** design system (shared
+with the device dashboard and vaultctl web): a sky `#9dd2f7` dotted canvas, a
+cream `#f8f6f0` window shell with 2.5px ink outlines and hard offset shadows,
+yellow primary actions, and four accent palettes — `blue` (default), `purple`,
+`orange`, `yellow` — switchable from the header and persisted in
 `localStorage` (`mem-palette`). Dark mode follows `prefers-color-scheme`.
 
 Mobile-first: at ≤760px the sidebar becomes an off-canvas drawer behind the
 hamburger button (with a scrim), the header search wraps to its own row, and
-all controls keep ≥42px touch targets. At >760px the sidebar is fixed beside
-the content pane. Fonts are Sora + JetBrains Mono with an automatic
-Noto Sans Thai fallback (no webfont download — self-hosted assets are not
-shipped, so the system stack resolves).
+all controls keep ≥40px touch targets. At >760px the sidebar is fixed beside
+the content pane. Fonts are Space Grotesk + Sarabun + DM Mono, self-hosted: the
+woff2 subsets (thai + latin, ~114 KiB) are embedded in the binary and served
+from `/ui/fonts/...` with `font-src 'self'` in the CSP, so no request ever
+leaves the host and no webfont CDN is needed.
 
 ## 5. CLI
 
@@ -186,14 +188,16 @@ quit (`q`). It uses the same index as the CLI/server; nothing else.
 
 Deployment on the lab host: the release binary is installed to
 `/usr/local/bin/mem` (static, `CGO_ENABLED=0`); systemd `memory.service`
-runs `ExecStart=/usr/local/bin/mem server` with env `/etc/mem/mem.env`,
-alongside `mem-lan.socket` (LAN `192.168.1.47:3200` → socket-proxy →
-loopback). The repo is the build source, not the running path.
+runs `ExecStart=/usr/local/bin/mem server` with env `/etc/mem/mem.env`. The
+optional `mem-lan.socket` is disabled by default because its socket proxy is
+plaintext; enable it only behind TLS or an encrypted tunnel. The repo is the
+build source, not the running path.
 
 ## 8. Clients
 
 - **mem-mcp.py** (`~/.local/bin/mem-mcp.py`) — stdio MCP server fronting the
-  REST API; wired into opencode and pi-bolt (`~/.pi/agent/mcp.json`).
+  REST API; configure it for each MCP-capable runtime (Codex, Antigravity,
+  OpenCode, pi-bolt).
   Tools: `memory_search`, `memory_add`, `memory_context`, `memory_extract`,
   `memory_stats`, `memory_inbox` (always empty), `memory_promote`/`reject`
   (no-ops).
@@ -208,6 +212,10 @@ loopback). The repo is the build source, not the running path.
 Guarantees
 - Writes are durable: atomic tmp+rename, then index update; a failed index
   update never corrupts the file (and the index is rebuildable anyway).
+- Read-modify-write operations and index rescans are serialized across local
+  processes with an advisory lock beside the wiki directory.
+- Restore stages and validates the archive, applies aggregate size limits, then
+  replaces wiki content while retaining rollback data until reindexing succeeds.
 - Backups exclude derived state; a restore always rebuilds the index.
 - Deletes are reversible within the retention window.
 

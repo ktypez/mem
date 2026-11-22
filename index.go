@@ -65,6 +65,19 @@ func closeIndex() {
 	}
 }
 
+// indexReset clears the derived index before a restore so pages with unchanged
+// size and timestamps are still re-read from the restored files.
+func indexReset() error {
+	if indexDB == nil {
+		return fmt.Errorf("index not open")
+	}
+	if _, err := indexDB.Exec(`DELETE FROM pages_fts`); err != nil {
+		return err
+	}
+	_, err := indexDB.Exec(`DELETE FROM pages`)
+	return err
+}
+
 // indexUpsertPage stores the page metadata and refreshes its FTS row.
 func indexUpsertPage(p Page, mtime int64, size int64) error {
 	if indexDB == nil {

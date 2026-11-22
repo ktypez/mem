@@ -1,14 +1,13 @@
 [Unit]
-Description=mem — Memory Service (Go/PostgreSQL knowledge graph)
-After=network.target postgresql.service
-Wants=postgresql.service
+Description=mem — Wiki Memory Service (Markdown pages + SQLite FTS5)
+After=network.target
 
 [Service]
 Type=simple
 User=admin
 WorkingDirectory=/home/admin/projects/mem
 EnvironmentFile=/etc/mem/mem.env
-ExecStart=/home/admin/projects/mem/mem server
+ExecStart=/usr/local/bin/mem server
 Restart=on-failure
 RestartSec=5
 UMask=0077

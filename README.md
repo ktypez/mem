@@ -60,13 +60,18 @@ install -m 0644 mem-agents-index.service mem-agents-index.timer ~/.config/system
 systemctl --user daemon-reload && systemctl --user enable --now mem-agents-index.timer
 ```
 
-`scripts/mem-mcp.py` is the stdio MCP bridge used by those runtimes; install the
-copy where the runtime spawns it (`~/.local/bin/mem-mcp.py`) and keep it in sync
-with the repository copy.
+`scripts/mem-mcp.py` is the stdio MCP bridge for MCP-capable runtimes, including
+Codex, Antigravity, OpenCode, and pi-bolt. Install the copy where the runtime
+spawns it (`~/.local/bin/mem-mcp.py`) and keep it in sync with the repository
+copy. Each runtime must configure the same bridge; the shared `AGENTS.md` index
+does not provide read/write access by itself.
 
-The web UI at `/` is a single page in the shared V5 "paper pop" skin: search,
-read, edit, create, trash, with the page list in a drawer on a phone. No
-external assets; it works with Basic auth.
+The web UI at `/` is a single page in the shared MCKY UI V6 "Work Shell"
+skin — sky canvas, cream window shell, ink outlines, hard offset shadows,
+Space Grotesk / Sarabun / DM Mono: search, read, edit, create, trash, with the
+page list in a drawer on a phone. The webfonts are embedded in the binary and
+served from `/ui/fonts`, so there are still no external assets; it works with
+Basic auth.
 
 ## CLI
 

@@ -142,7 +142,8 @@ func runServer() error {
 	mux.HandleFunc("/api/brief", handleBrief)
 	mux.HandleFunc("/api/inbox", handleInbox)
 
-	// UI
+	// UI (the font route must be registered before the catch-all)
+	mux.HandleFunc("/ui/fonts/", handleUIFont)
 	mux.HandleFunc("/", handleUI)
 
 	server := &http.Server{

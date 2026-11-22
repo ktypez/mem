@@ -226,19 +226,15 @@ func (m *tui) doCreate() tea.Cmd {
 	if title == "" {
 		return nil
 	}
-	slug, err := slugForTitle(title)
+	p, err := upsertPageByTitle(title, "", nil, "tui")
 	if err != nil {
-		m.status = tuiErr.Render(err.Error())
-		return nil
-	}
-	if _, err := upsertPage(slug, title, "", nil, "tui"); err != nil {
 		m.status = tuiErr.Render(err.Error())
 		return nil
 	}
 	m.mode = modeBrowse
 	m.newName.Blur()
 	m.newName.Reset()
-	m.status = tuiOK.Render("created " + slug)
+	m.status = tuiOK.Render("created " + p.Slug)
 	return m.reload()
 }
 

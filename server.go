@@ -134,12 +134,7 @@ func handleWikiPages(w http.ResponseWriter, r *http.Request) {
 		if slug, _ := data["slug"].(string); strings.TrimSpace(slug) != "" {
 			p, err = upsertPage(slug, title, body, tagsFromBody(data), by)
 		} else {
-			slug, slugErr := slugForTitle(title)
-			if slugErr != nil {
-				jsonResp(w, 500, map[string]string{"error": slugErr.Error()})
-				return
-			}
-			p, err = upsertPage(slug, title, body, tagsFromBody(data), by)
+			p, err = upsertPageByTitle(title, body, tagsFromBody(data), by)
 		}
 		if err != nil {
 			jsonResp(w, 500, map[string]string{"error": err.Error()})
@@ -278,9 +273,6 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query().Get("q")
 	limit := 10
-	if l := r.URL.Query().Get("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
-	}
 	if r.Method == http.MethodPost {
 		var data map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
@@ -293,6 +285,9 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		if v, ok := data["limit"].(float64); ok && int(v) > 0 {
 			limit = int(v)
 		}
+	}
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
 	}
 	if limit < 1 || limit > 200 {
 		limit = 10

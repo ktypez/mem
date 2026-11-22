@@ -35,12 +35,16 @@ The service defaults to loopback-only and refuses to start with no credential
 configured unless `MEM_ALLOW_UNAUTHENTICATED=true` (local development only).
 A socket proxy or reverse proxy in front of a loopback listener makes every
 remote client look local, so never combine that opt-out with a proxy. Plain
-HTTP exposes tokens on the network: use the systemd socket proxy, TLS, or an
-encrypted tunnel beyond the local host.
+HTTP exposes tokens on the network. `systemd-socket-proxyd` only forwards TCP;
+it does not add TLS. Keep `mem-lan.socket` disabled unless a TLS endpoint or
+encrypted tunnel protects the connection before it reaches this service. The
+local MCP bridge uses loopback and does not need the LAN socket.
 
 ## Browser protections
-The web UI is served with a per-response Content-Security-Policy nonce, no
-external assets, `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
+The web UI is served with a per-response Content-Security-Policy nonce and no
+external assets: the V6 webfonts are embedded in the binary and served from
+`/ui/fonts/` under `font-src 'self'`, so no third-party host is contacted. It
+also sets `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`.
 API writes that carry a cross-site `Origin` header are rejected (add
 legitimate proxy origins to `MEM_ALLOWED_ORIGINS`).
 

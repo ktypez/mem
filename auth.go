@@ -174,6 +174,7 @@ func contentSecurityPolicy(nonce string) string {
 	return "default-src 'none'; " +
 		"script-src 'nonce-" + nonce + "'; " +
 		"style-src 'self' 'unsafe-inline'; " +
+		"font-src 'self'; " +
 		"img-src 'self' data:; " +
 		"connect-src 'self'; " +
 		"base-uri 'none'; form-action 'none'; frame-ancestors 'none'"

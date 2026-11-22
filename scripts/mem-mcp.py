@@ -103,7 +103,8 @@ def call(method: str, path: str, body: dict | None = None, raw_text: bool = Fals
     except urllib.error.HTTPError as e:
         return f"HTTP {e.code}: {e.read().decode()[:300]}" if raw_text else {"error": f"HTTP {e.code}: {e.read().decode()[:300]}"}
     except Exception as e:  # noqa: BLE001 - surface any failure to the caller
-        return str(e) if raw_text else {"error": str(e)}
+        message = f"ERROR: {type(e).__name__}: {e}"
+        return message if raw_text else {"error": message}
 
 
 TOOLS = [
@@ -253,7 +254,7 @@ def main() -> int:
             out = run_tool(name, args)
             if isinstance(out, str):
                 content = [{"type": "text", "text": out}]
-                is_error = out.startswith("HTTP ")
+                is_error = out.startswith(("HTTP ", "ERROR:"))
             else:
                 content = [{"type": "text", "text": json.dumps(out, ensure_ascii=False)}]
                 is_error = isinstance(out, dict) and "error" in out

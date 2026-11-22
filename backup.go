@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,9 +20,9 @@ import (
 
 const (
 	backupVersion = "2.0"
-	// maxRestoreBytes caps the decompressed size of a restore, so a small gzip
-	// payload cannot expand into an unbounded amount of disk.
+	// maxRestoreBytes caps both compressed input and aggregate extracted bytes.
 	maxRestoreBytes = 512 << 20
+	maxRestoreFiles = 100000
 )
 
 // excludedFromBackup are derived or temporary files that never need archiving.
@@ -33,6 +34,11 @@ func excludedFromBackup(name string) bool {
 }
 
 func runBackupTo(w io.Writer) error {
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	gz := gzip.NewWriter(w)
 	defer gz.Close()
 	tw := tar.NewWriter(gz)
@@ -43,7 +49,7 @@ func runBackupTo(w io.Writer) error {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return err
 	}
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -88,27 +94,25 @@ func runBackupTo(w io.Writer) error {
 // runRestoreFrom extracts a backup archive into the wiki directory and rebuilds
 // the index from the restored files.
 func runRestoreFrom(r io.Reader) (int, error) {
-	compressed := io.LimitReader(r, maxRestoreBytes)
-	gz, err := gzip.NewReader(compressed)
+	lr := &io.LimitedReader{R: r, N: maxRestoreBytes + 1}
+	gz, err := gzip.NewReader(lr)
 	if err != nil {
 		return 0, fmt.Errorf("not a gzip archive: %w", err)
 	}
-	defer gz.Close()
-	// Bound the expanded tar stream as well as the compressed input. The extra
-	// byte lets us distinguish an archive at the limit from one that exceeds it.
-	expanded := &io.LimitedReader{R: gz, N: maxRestoreBytes + 1}
-	tr := tar.NewReader(expanded)
+	tr := tar.NewReader(gz)
 	root := wikiDir()
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	parent := filepath.Dir(root)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return 0, err
 	}
-	rootFS, err := os.OpenRoot(root)
+	stage, err := os.MkdirTemp(parent, ".mem-restore-")
 	if err != nil {
 		return 0, err
 	}
-	defer rootFS.Close()
+	defer os.RemoveAll(stage)
 	n := 0
-	pages := map[string]bool{}
+	entries := 0
+	var total int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -117,37 +121,46 @@ func runRestoreFrom(r io.Reader) (int, error) {
 		if err != nil {
 			return n, err
 		}
+		entries++
+		if entries > maxRestoreFiles*2 {
+			return n, fmt.Errorf("restore exceeds %d archive entries", maxRestoreFiles*2)
+		}
 		// Only accept paths under mem-wiki/.
 		name := hdr.Name
-		parts := strings.SplitN(name, "/", 2)
-		if len(parts) != 2 || parts[0] != "mem-wiki" || parts[1] == "" {
+		clean := path.Clean(name)
+		parts := strings.SplitN(clean, "/", 2)
+		if len(parts) != 2 || parts[0] != "mem-wiki" || parts[1] == "" || parts[1] == "." {
 			continue
 		}
 		rel := parts[1]
-		if !filepath.IsLocal(rel) {
-			continue
+		if strings.Contains(rel, "\\") || !filepath.IsLocal(filepath.FromSlash(rel)) {
+			return n, fmt.Errorf("unsafe restore path %q", name)
 		}
 		if excludedFromBackup(rel) {
 			continue
 		}
-		dst := filepath.FromSlash(rel)
+		dst := filepath.Join(stage, filepath.FromSlash(rel))
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := rootFS.MkdirAll(dst, 0o700); err != nil {
+			if err := os.MkdirAll(dst, 0o700); err != nil {
 				return n, err
 			}
 		case tar.TypeReg:
-			if hdr.Size < 0 || hdr.Size > maxRestoreBytes {
-				return n, fmt.Errorf("restore exceeds %d bytes", maxRestoreBytes)
+			if hdr.Size < 0 || hdr.Size > maxRestoreBytes-total {
+				return n, fmt.Errorf("restore exceeds %d total extracted bytes", maxRestoreBytes)
 			}
-			if err := rootFS.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			if n >= maxRestoreFiles {
+				return n, fmt.Errorf("restore exceeds %d files", maxRestoreFiles)
+			}
+			total += hdr.Size
+			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 				return n, err
 			}
-			f, err := rootFS.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o700|0o600)
+			f, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o700|0o600)
 			if err != nil {
 				return n, err
 			}
-			written, err := io.Copy(f, tr)
+			written, err := io.CopyN(f, tr, hdr.Size)
 			closeErr := f.Close()
 			if err != nil {
 				return n, err
@@ -156,55 +169,132 @@ func runRestoreFrom(r io.Reader) (int, error) {
 				return n, closeErr
 			}
 			if written != hdr.Size {
-				return n, fmt.Errorf("truncated archive member %q", hdr.Name)
-			}
-			if written > maxRestoreBytes {
-				return n, fmt.Errorf("restore exceeds %d bytes", maxRestoreBytes)
-			}
-			if !strings.Contains(dst, "/") && strings.HasSuffix(dst, ".md") {
-				pages[dst] = true
+				return n, io.ErrUnexpectedEOF
 			}
 			n++
+		default:
+			return n, fmt.Errorf("unsupported restore entry type %d for %q", hdr.Typeflag, name)
 		}
 	}
-	// tar.Reader stops at the end marker; drain gzip to ensure trailing expanded
-	// data cannot bypass the archive-wide size limit.
-	_, err = io.Copy(io.Discard, expanded)
+	remaining, err := io.Copy(io.Discard, io.LimitReader(gz, maxRestoreBytes-total+1))
 	if err != nil {
 		return n, err
 	}
-	if expanded.N == 0 {
-		return n, fmt.Errorf("restore exceeds %d bytes", maxRestoreBytes)
+	if remaining > maxRestoreBytes-total {
+		return n, fmt.Errorf("restore exceeds %d total extracted bytes", maxRestoreBytes)
 	}
-	// Restore semantics replace top-level pages: remove pages absent from the
-	// archive only after the complete archive has been validated and extracted.
-	dir, err := rootFS.Open(".")
+	if lr.N == 0 {
+		return n, fmt.Errorf("restore exceeds %d compressed bytes", maxRestoreBytes)
+	}
+	if err := gz.Close(); err != nil {
+		return n, err
+	}
+	unlock, err := lockWikiWrites()
 	if err != nil {
 		return n, err
 	}
-	entries, err := dir.ReadDir(-1)
-	closeErr := dir.Close()
+	defer unlock()
+	old, err := replaceWikiContent(root, stage)
 	if err != nil {
 		return n, err
 	}
-	if closeErr != nil {
-		return n, closeErr
+	if err := indexReset(); err != nil {
+		if rollbackErr := restoreWikiContent(root, old); rollbackErr != nil {
+			return n, fmt.Errorf("reset index for restore: %w (rollback failed; previous data remains at %s: %v)", err, old, rollbackErr)
+		}
+		_ = indexReset()
+		_, _ = rescanWikiUnlocked()
+		return n, err
+	}
+	if _, err := rescanWikiUnlocked(); err != nil {
+		if rollbackErr := restoreWikiContent(root, old); rollbackErr != nil {
+			return n, fmt.Errorf("index restored wiki: %w (rollback failed; previous data remains at %s: %v)", err, old, rollbackErr)
+		}
+		_ = indexReset()
+		_, _ = rescanWikiUnlocked()
+		return n, err
+	}
+	if err := os.RemoveAll(old); err != nil {
+		return n, fmt.Errorf("restore succeeded but old-data cleanup failed: %w", err)
+	}
+	return n, nil
+}
+
+// replaceWikiContent replaces user data while leaving the live SQLite index in
+// place. Existing content is retained in a sibling directory until the staged
+// content has been moved successfully, allowing rollback on filesystem errors.
+func replaceWikiContent(root, stage string) (string, error) {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	old, err := os.MkdirTemp(filepath.Dir(root), ".mem-restore-old-")
+	if err != nil {
+		return "", err
+	}
+	keepIndex := func(name string) bool {
+		base := filepath.Base(name)
+		return base == ".mem-index.db" || strings.HasPrefix(base, ".mem-index.db-")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		os.RemoveAll(old)
+		return "", err
 	}
 	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".md") || pages[name] {
+		if keepIndex(entry.Name()) {
 			continue
 		}
-		if err := rootFS.Remove(name); err != nil && !os.IsNotExist(err) {
-			return n, err
+		if err := os.Rename(filepath.Join(root, entry.Name()), filepath.Join(old, entry.Name())); err != nil {
+			if rollbackErr := restoreWikiContent(root, old); rollbackErr != nil {
+				return "", fmt.Errorf("move old wiki content: %w (rollback failed; previous data remains at %s: %v)", err, old, rollbackErr)
+			}
+			return "", err
 		}
 	}
-	synced, err := rescanWiki()
+	entries, err = os.ReadDir(stage)
 	if err != nil {
-		log.Printf("restore: index resync failed: %v", err)
+		if rollbackErr := restoreWikiContent(root, old); rollbackErr != nil {
+			return "", fmt.Errorf("read staged restore: %w (rollback failed; previous data remains at %s: %v)", err, old, rollbackErr)
+		}
+		return "", err
 	}
-	_ = synced
-	return n, nil
+	for _, entry := range entries {
+		if err := os.Rename(filepath.Join(stage, entry.Name()), filepath.Join(root, entry.Name())); err != nil {
+			if rollbackErr := restoreWikiContent(root, old); rollbackErr != nil {
+				return "", fmt.Errorf("install restored wiki content: %w (rollback failed; previous data remains at %s: %v)", err, old, rollbackErr)
+			}
+			return "", err
+		}
+	}
+	return old, nil
+}
+
+func restoreWikiContent(root, old string) error {
+	keepIndex := func(name string) bool {
+		base := filepath.Base(name)
+		return base == ".mem-index.db" || strings.HasPrefix(base, ".mem-index.db-")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !keepIndex(entry.Name()) {
+			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	previous, err := os.ReadDir(old)
+	if err != nil {
+		return err
+	}
+	for _, entry := range previous {
+		if err := os.Rename(filepath.Join(old, entry.Name()), filepath.Join(root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return os.RemoveAll(old)
 }
 
 // --- CLI ---

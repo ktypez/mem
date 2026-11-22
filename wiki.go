@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -150,6 +151,28 @@ func pageFile(slug string) string {
 	return filepath.Join(wikiDir(), slug+".md")
 }
 
+// lockWikiWrites serializes read-modify-write operations across the HTTP
+// service, CLI, and organizer processes. The lock lives beside the wiki so it
+// is not included in backups or exposed as a page.
+func lockWikiWrites() (func(), error) {
+	root := wikiDir()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, err
+	}
+	lock, err := os.OpenFile(root+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		lock.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+	}, nil
+}
+
 // loadPage reads one page from disk.
 func loadPage(slug string) (Page, error) {
 	p, err := parsePageFile(pageFile(slug))
@@ -162,6 +185,16 @@ func loadPage(slug string) (Page, error) {
 
 // savePage writes a page atomically (tmp file + rename) and refreshes the index.
 func savePage(p Page) error {
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return savePageUnlocked(p)
+}
+
+// savePageUnlocked requires the caller to hold the wiki write lock.
+func savePageUnlocked(p Page) error {
 	if err := os.MkdirAll(wikiDir(), 0o700); err != nil {
 		return err
 	}
@@ -184,6 +217,15 @@ func savePage(p Page) error {
 // upsertPage creates or updates a page by slug. The title in the frontmatter is
 // rewritten when the caller supplies a new one.
 func upsertPage(slug, title, body string, tags []string, by string) (Page, error) {
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return Page{}, err
+	}
+	defer unlock()
+	return upsertPageUnlocked(slug, title, body, tags, by)
+}
+
+func upsertPageUnlocked(slug, title, body string, tags []string, by string) (Page, error) {
 	cleanSlug, err := safeSlug(slug)
 	if err != nil {
 		return Page{}, err
@@ -219,10 +261,24 @@ func upsertPage(slug, title, body string, tags []string, by string) (Page, error
 	if strings.TrimSpace(p.Body) == "" {
 		p.Body = factsHeading + "\n"
 	}
-	if err := savePage(p); err != nil {
+	if err := savePageUnlocked(p); err != nil {
 		return Page{}, err
 	}
 	return p, nil
+}
+
+// upsertPageByTitle makes title lookup and creation one serialized operation.
+func upsertPageByTitle(title, body string, tags []string, by string) (Page, error) {
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return Page{}, err
+	}
+	defer unlock()
+	slug, err := slugForTitle(title)
+	if err != nil {
+		return Page{}, err
+	}
+	return upsertPageUnlocked(slug, title, body, tags, by)
 }
 
 // slugForTitle finds an existing page whose frontmatter title matches, or
@@ -255,6 +311,15 @@ func slugForTitle(title string) (string, error) {
 // subject, then a shared inbox page). Duplicate facts update the page instead
 // of piling up copies. It returns the page and whether a new line was added.
 func appendFact(topic, subject, body, source string) (Page, bool, error) {
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return Page{}, false, err
+	}
+	defer unlock()
+	return appendFactUnlocked(topic, subject, body, source)
+}
+
+func appendFactUnlocked(topic, subject, body, source string) (Page, bool, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return Page{}, false, fmt.Errorf("empty fact body")
@@ -285,7 +350,7 @@ func appendFact(topic, subject, body, source string) (Page, bool, error) {
 	if strings.Contains(p.Body, body) {
 		// Already recorded: touch the page instead of duplicating the line.
 		p.UpdatedBy = source
-		if err := savePage(p); err != nil {
+		if err := savePageUnlocked(p); err != nil {
 			return Page{}, false, err
 		}
 		return p, false, nil
@@ -298,7 +363,7 @@ func appendFact(topic, subject, body, source string) (Page, bool, error) {
 	}
 	p.Body += line + "\n"
 	p.UpdatedBy = source
-	if err := savePage(p); err != nil {
+	if err := savePageUnlocked(p); err != nil {
 		return Page{}, false, err
 	}
 	return p, created, nil
@@ -331,6 +396,11 @@ func listPages() ([]Page, error) {
 // deletePage moves a page into trash/ instead of erasing it: memory is
 // append-only even when a page is "deleted".
 func deletePage(slug string) (string, error) {
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	cleanSlug, err := safeSlug(slug)
 	if err != nil {
 		return "", err
@@ -351,9 +421,40 @@ func deletePage(slug string) (string, error) {
 	return dst, nil
 }
 
+// addPageTag updates tags while holding the same cross-process write lock used
+// by fact appends and page edits.
+func addPageTag(slug, tag string) error {
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	p, err := loadPage(slug)
+	if err != nil {
+		return err
+	}
+	for _, existing := range p.Tags {
+		if existing == tag {
+			return nil
+		}
+	}
+	p.Tags = append(p.Tags, tag)
+	return savePageUnlocked(p)
+}
+
 // rescanWiki walks the page files and syncs the index with the disk. External
 // edits (agents touching the markdown directly) are picked up here.
 func rescanWiki() (int, error) {
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	return rescanWikiUnlocked()
+}
+
+// rescanWikiUnlocked requires the caller to hold the wiki write lock.
+func rescanWikiUnlocked() (int, error) {
 	entries, err := os.ReadDir(wikiDir())
 	if err != nil {
 		return 0, nil

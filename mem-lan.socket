@@ -1,6 +1,8 @@
 [Unit]
-Description=mem — LAN entry point for the loopback-bound memory service
+Description=mem — optional plaintext LAN forward (requires a trusted network)
 Documentation=https://github.com/ktypez/mem
+# Raw TCP forward only, not TLS. Keep disabled unless an encrypted tunnel or
+# TLS proxy protects clients before traffic reaches this socket.
 After=network-online.target
 Wants=network-online.target
 
@@ -10,5 +12,4 @@ ListenStream=192.168.1.47:3200
 Accept=no
 Service=mem-lan.service
 
-[Install]
-WantedBy=sockets.target
+# Deliberately no [Install] section: this plaintext listener is opt-in.

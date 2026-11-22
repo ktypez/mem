@@ -56,7 +56,12 @@ func runOrganizer() (organizeResult, error) {
 	if err := openIndex(); err != nil {
 		return res, err
 	}
-	synced, err := rescanWiki()
+	unlock, err := lockWikiWrites()
+	if err != nil {
+		return res, err
+	}
+	defer unlock()
+	synced, err := rescanWikiUnlocked()
 	if err != nil {
 		return res, err
 	}
@@ -99,7 +104,7 @@ func runOrganizer() (organizeResult, error) {
 		}
 		if changed {
 			full.Body = strings.Join(out, "\n")
-			if err := savePage(full); err != nil {
+			if err := savePageUnlocked(full); err != nil {
 				log.Printf("organizer: save %s: %v", p.Slug, err)
 				continue
 			}

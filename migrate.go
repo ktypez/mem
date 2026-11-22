@@ -95,19 +95,8 @@ func runImportLegacy(path string) error {
 		pages[p.Slug] = true
 		if created {
 			// Tag migrated pages so they are easy to find and prune later.
-			if p, err := loadPage(p.Slug); err == nil {
-				found := false
-				for _, t := range p.Tags {
-					if t == "migrated" {
-						found = true
-					}
-				}
-				if !found {
-					p.Tags = append(p.Tags, "migrated")
-				}
-				if err := savePage(p); err != nil {
-					return err
-				}
+			if err := addPageTag(p.Slug, "migrated"); err != nil {
+				return err
 			}
 		}
 		imported++
