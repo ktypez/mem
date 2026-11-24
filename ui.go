@@ -184,7 +184,8 @@ input:focus,textarea:focus{box-shadow:4px 4px 0 var(--v6-ink)}
 input::placeholder,textarea::placeholder{color:var(--v6-faint)}
 
 /* ---------- desk + window shell ---------- */
-.desk{height:100dvh;padding:clamp(0px,2.2vw,24px);display:flex}
+/* Leave a generous frame so the fixed painted scenery is actually visible. */
+.desk{height:100dvh;padding:clamp(32px,4vw,56px) clamp(24px,5vw,72px) clamp(96px,14vh,140px);display:flex}
 .shell{
   flex:1; min-width:0; min-height:0; display:flex; flex-direction:column;
   background:var(--v6-cream); border:var(--outline); border-radius:var(--r);
