@@ -107,20 +107,22 @@ Single page at `/` (CSP with per-response nonce, no external assets):
 page list, full-text search, read (minimal markdown render), edit, create,
 trash. Auth: Basic.
 
-Layout and styling follow the **MCKY UI V6 "Work Shell"** design system (shared
-with the device dashboard and vaultctl web): a sky `#9dd2f7` dotted canvas, a
-cream `#f8f6f0` window shell with 2.5px ink outlines and hard offset shadows,
-yellow primary actions, and four accent palettes — `blue` (default), `purple`,
-`orange`, `yellow` — switchable from the header and persisted in
-`localStorage` (`mem-palette`). Dark mode follows `prefers-color-scheme`.
+Layout and styling follow the locally vendored **mochi pastel** design system
+(from DATA Ledger / Truck): a paper `#FFFDF8` dotted canvas, `#322A42` ink,
+pastel pill buttons and badges, and soft sticker shadows. Four palettes —
+`mochi` (default), `matcha`, `soda`, `sakura` — set the `--hue-pri` / `--hue-acc`
+/ `--hue-sec` HSL ramps via `data-palette`, switchable from the header and
+persisted in `localStorage` (`mochi.palette`). Mode cycles auto → light → dark
+via `data-theme` and `mochi.theme`, with `prefers-color-scheme` as the auto
+default; older `mem-mode` / `mem-palette` values are still read as fallbacks.
 
 Mobile-first: at ≤760px the sidebar becomes an off-canvas drawer behind the
 hamburger button (with a scrim), the header search wraps to its own row, and
 all controls keep ≥40px touch targets. At >760px the sidebar is fixed beside
-the content pane. Fonts are Space Grotesk + Sarabun + DM Mono, self-hosted: the
-woff2 subsets (thai + latin, ~114 KiB) are embedded in the binary and served
-from `/ui/fonts/...` with `font-src 'self'` in the CSP, so no request ever
-leaves the host and no webfont CDN is needed.
+the independently scrollable content pane. Fonts are Itim + Mali + Prompt,
+self-hosted: the woff2 subsets (thai + latin) are embedded in the binary and
+served from `/ui/fonts/...` with `font-src 'self'` in the CSP, so no request
+ever leaves the host and no webfont CDN is needed.
 
 ## 5. CLI
 

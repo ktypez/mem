@@ -42,8 +42,9 @@ local MCP bridge uses loopback and does not need the LAN socket.
 
 ## Browser protections
 The web UI is served with a per-response Content-Security-Policy nonce and no
-external assets: the V6 webfonts are embedded in the binary and served from
-`/ui/fonts/` under `font-src 'self'`, so no third-party host is contacted. It
+external assets: the mochi Itim / Mali / Prompt webfonts are embedded in the
+binary and served from `/ui/fonts/` under `font-src 'self'`, so no third-party
+host is contacted. It
 also sets `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`.
 API writes that carry a cross-site `Origin` header are rejected (add
 legitimate proxy origins to `MEM_ALLOWED_ORIGINS`).

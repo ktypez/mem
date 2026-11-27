@@ -7,9 +7,10 @@ import (
 	"strings"
 )
 
-// uiFonts carries the V6 webfonts (thai + latin subsets of Space Grotesk,
-// Sarabun and DM Mono) inside the binary, so the wiki UI keeps its
-// "no external assets" property while the strict CSP can stay same-origin.
+// uiFonts carries the self-hosted mochi webfonts (thai + latin subsets of
+// Itim, Mali and Prompt, vendored from truck/apps/web-svelte/public/fonts)
+// inside the binary, so the wiki UI keeps its "no external assets" property
+// while the strict CSP can stay same-origin.
 //
 //go:embed fonts/*.woff2
 var uiFonts embed.FS

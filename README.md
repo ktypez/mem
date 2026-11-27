@@ -66,12 +66,13 @@ spawns it (`~/.local/bin/mem-mcp.py`) and keep it in sync with the repository
 copy. Each runtime must configure the same bridge; the shared `AGENTS.md` index
 does not provide read/write access by itself.
 
-The web UI at `/` is a single page in the shared MCKY UI V6 "Work Shell"
-skin — sky canvas, cream window shell, ink outlines, hard offset shadows,
-Space Grotesk / Sarabun / DM Mono: search, read, edit, create, trash, with the
-page list in a drawer on a phone. The webfonts are embedded in the binary and
-served from `/ui/fonts`, so there are still no external assets; it works with
-Basic auth.
+The web UI at `/` is a single page in the local "mochi pastel" style shared
+with DATA Ledger / Truck — paper `#FFFDF8` with a dot grid, violet ink,
+pastel pill fills, soft sticker shadows, and four palettes (`mochi`, `matcha`,
+`soda`, `sakura`) plus auto / light / dark mode. It provides search, read,
+edit, create, and trash, with the page list in an off-canvas drawer on a phone.
+Itim / Mali / Prompt webfonts are embedded in the binary and served from
+`/ui/fonts`, so there are still no external assets; it works with Basic auth.
 
 ## CLI
 
